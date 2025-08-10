@@ -1,0 +1,332 @@
+from abc import ABC, abstractmethod
+from pydantic import ValidationError
+from constants import GPT_4_1_MINI
+from typing import List, Dict
+from ai_server.schemas.message import Message, Role, FunctionCallRequest
+import openai
+from openai.types.responses import Response
+from openai.types.chat.chat_completion import ChatCompletion
+import os
+from datetime import datetime, timezone
+from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException, AIResponseParseException
+import json
+from ai_server.ai.providers.llm_provider import LLMProvider
+from ai_server.ai.tools.tools import Tool
+
+class OpenAIProvider(LLMProvider, ABC):
+    def __init__(self, temperature: float = 0.7) -> None:
+        super().__init__("openai")
+        self.temperature = temperature
+        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    @abstractmethod
+    def generate_response(
+        self, 
+        query: str, 
+        conversation_history: List[Message], 
+        user_id: str, 
+        session_id:str, 
+        tools: List[Tool] = [], 
+        tool_choice: str = "auto",
+        model_name: str = GPT_4_1_MINI
+    ) -> List[Message]:
+        pass
+
+    def _timestamp_to_unix_str(self, timestamp: datetime) -> str:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        
+
+class OpenAIResponsesAPI(OpenAIProvider):
+    def __init__(self, temperature: float = 0.7) -> None:
+        super().__init__(temperature)
+
+    def _convert_to_openai_compatible_messages(self, message: Message) -> Dict:
+        role = "user"
+        match message.role:
+            case Role.HUMAN:
+                role = "user"
+            case Role.AI:
+                role = "assistant"
+                if message.tool_call_id:
+                    return {
+                        "call_id": message.tool_call_id,
+                        "type": "function_call",
+                        "name": message.function_call.name,
+                        "arguments": json.dumps(message.function_call.arguments),
+                    }
+            case Role.SYSTEM:
+                role = "developer"
+            case Role.TOOL:
+                return {
+                    "type": "function_call_output",
+                    "call_id": message.tool_call_id,
+                    "output": message.content,
+                }
+        return {
+            "role": role,
+            "content": message.content,
+        }
+
+    def _handle_ai_messages_and_tool_calls(
+        self, 
+        response: Response, 
+        user_id: str, 
+        session_id: str,
+        tools: List[Tool]
+    ) -> List[Message]:
+        outputs = response.output
+        messages: List[Message] = []
+        try:
+            for resp in outputs:
+                if resp.type == "function_call":
+                    function_call = FunctionCallRequest(
+                        name=resp.function_call.name,
+                        arguments=json.loads(resp.function_call.arguments),
+                    )
+                    message_ai = Message(
+                        role=Role.AI,
+                        tool_call_id=resp.tool_call_id,
+                        user_id=user_id,
+                        session_id=session_id,
+                        metadata={},
+                        content='',
+                        function_call=function_call,
+                        created_at=self._timestamp_to_unix_str(response.created_at),
+                    )
+                    function_response = self._call_function(function_call, tools)
+                    message_tool = Message(
+                        role=Role.TOOL,
+                        tool_call_id=resp.tool_call_id,
+                        user_id=user_id,
+                        session_id=session_id,
+                        metadata={},
+                        content=function_response,
+                        function_call=None,
+                        created_at=self._timestamp_to_unix_str(response.created_at),
+                    )
+                    messages.append(message_ai)
+                    messages.append(message_tool)
+                elif resp.type == "message":
+                    message = Message(
+                        role=Role.AI,
+                        tool_call_id=None,
+                        user_id=user_id,
+                        session_id=session_id,
+                        metadata={},
+                        content=resp.content[0].text,
+                        function_call=None,
+                        created_at=self._timestamp_to_unix_str(response.created_at),
+                    )
+                    messages.append(message)
+                else:
+                    raise UnrecognizedMessageTypeException(message="Unrecognized message type", note=f"Message type: {resp.type} - Implementation does not exist")
+            return messages
+        except ValidationError as e:
+            raise AIResponseParseException(message="Failed to parse AI response from openai responses", note=str(e))
+
+    def generate_response(
+        self, 
+        query: str, 
+        conversation_history: List[Message], 
+        user_id: str, 
+        session_id:str, 
+        tools: List[Tool] = [], 
+        tool_choice: str = "auto",
+        model_name: str = GPT_4_1_MINI
+    ) -> List[Message]:
+        formatted_query = Message(
+            role=Role.HUMAN,
+            tool_call_id=None,
+            user_id=user_id,
+            session_id=session_id,
+            metadata={},
+            content=query,
+            function_call=None,
+        )
+        input_messages = conversation_history + [formatted_query]
+        input_messages = list(map(self._convert_to_openai_compatible_messages, input_messages))
+        response = self.client.responses.create(
+            model=model_name,
+            input=input_messages,
+            temperature=self.temperature,
+            tools=self._convert_tools_to_openai_compatible(tools),
+            tool_choice=tool_choice,
+        )
+        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, tools)
+        return [formatted_query, *ai_messages]
+
+    def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
+        openai_tools = []
+        for tool in tools:
+            openai_tool = {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            }
+            for arg in tool.arguments:
+                openai_tool["parameters"]["properties"][arg.name] = {
+                    "type": arg.type,
+                    "description": arg.description,
+                }
+                if arg.required:
+                    openai_tool["parameters"]["required"].append(arg.name)
+            openai_tools.append(openai_tool)
+        return openai_tools
+        
+
+class OpenAIChatCompletionAPI(OpenAIProvider):
+    def __init__(self, temperature: float = 0.7) -> None:
+        super().__init__(temperature)
+
+    def _convert_to_openai_compatible_messages(self, message: Message) -> Dict:
+        role = "user"
+        match message.role:
+            case Role.HUMAN:
+                role = "user"
+            case Role.AI:
+                role = "assistant"
+                if message.tool_call_id:
+                    return {
+                        "role": role,
+                        "tool_calls": [
+                            {
+                                "id": message.tool_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": message.function_call.name,
+                                    "arguments": json.dumps(message.function_call.arguments),
+                                },
+                            }
+                        ],
+                    }
+            case Role.SYSTEM:
+                role = "developer"
+            case Role.TOOL:
+                return {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "content": message.content,
+                }
+        return {
+            "role": role,
+            "content": message.content,
+        }
+
+    def _handle_ai_messages_and_tool_calls(
+        self, 
+        response: ChatCompletion, 
+        user_id: str, 
+        session_id: str,
+        tools: List[Tool]
+    ) -> List[Message]:
+        output = response.choices[0].message
+        messages: List[Message] = []
+        content = output.content
+        tool_calls = output.tool_calls
+        try:
+            if content:
+                message = Message(
+                    role=Role.AI,
+                    tool_call_id=None,
+                    user_id=user_id,
+                    session_id=session_id,
+                    metadata={},
+                    content=content,
+                    function_call=None,
+                    created_at=self._timestamp_to_unix_str(response.created),
+                )
+                return [message]
+            if tool_calls:
+                for tool_call in tool_calls:
+                    function_call = FunctionCallRequest(
+                        name=tool_call.function.name,
+                        arguments=json.loads(tool_call.function.arguments),
+                    )
+                    message_ai = Message(
+                        role=Role.AI,
+                        tool_call_id=tool_call.id,
+                        user_id=user_id,
+                        session_id=session_id,
+                        metadata={},
+                        content='',
+                        function_call=function_call,
+                        created_at=self._timestamp_to_unix_str(response.created),
+                    )
+                    function_response = self._call_function(function_call, tools)
+                    message_tool = Message(
+                        role=Role.TOOL,
+                        tool_call_id=tool_call.id,
+                        user_id=user_id,
+                        session_id=session_id,
+                        metadata={},
+                        content=function_response,
+                        function_call=None,
+                        created_at=self._timestamp_to_unix_str(response.created),
+                    )
+                    messages.append(message_ai)
+                    messages.append(message_tool)
+            return messages
+        except ValidationError as e:
+            raise AIResponseParseException(message="Failed to parse AI response from openai responses", note=str(e))
+
+    def generate_response(
+        self, 
+        query: str, 
+        conversation_history: List[Message], 
+        user_id: str, 
+        session_id:str, 
+        tools: List[Tool] = [], 
+        tool_choice: str = "auto",
+        model_name: str = GPT_4_1_MINI
+    ) -> List[Message]:
+        formatted_query = Message(
+            role=Role.HUMAN,
+            tool_call_id=None,
+            user_id=user_id,
+            session_id=session_id,
+            metadata={},
+            content=query,
+            function_call=None,
+        )
+        input_messages = conversation_history + [formatted_query]
+        input_messages = list(map(self._convert_to_openai_compatible_messages, input_messages))
+        response = self.client.chat.completions.create(
+            model=model_name,
+            messages=input_messages,
+            temperature=self.temperature,
+            tools=self._convert_tools_to_openai_compatible(tools),
+            tool_choice=tool_choice,
+        )
+        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, tools)
+        return [formatted_query, *ai_messages]
+
+    def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
+        openai_tools = []
+        for tool in tools:
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                },
+            }
+            for arg in tool.arguments:
+                openai_tool["function"]["parameters"]["properties"][arg.name] = {
+                    "type": arg.type,
+                    "description": arg.description,
+                }
+                if arg.required:
+                    openai_tool["function"]["parameters"]["required"].append(arg.name)
+            openai_tools.append(openai_tool)
+        return openai_tools 
+        
