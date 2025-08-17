@@ -63,3 +63,16 @@ class GetHoroscope(Tool):
         return f"Horoscope for {arguments.zodiac_sign} is sunny"
         
     
+class GetCompanyName(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="get_company_name",
+            description="Returns the company name when asked",
+            arguments=GetCompanyName._parse_arguments()
+        )
+    
+    class Arguments(BaseModel):
+        pass
+    
+    def __call__(self, arguments: Arguments) -> str:
+        return "Company name is Lowe's"

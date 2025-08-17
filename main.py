@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import BASE_PATH, HOST, PORT, RELOAD, WORKERS
 from fastapi.openapi.utils import get_openapi
-from ai_server import Error, chat_router
+from ai_server import BaseException, chat_router
 from fastapi.responses import JSONResponse
 
 app = FastAPI(
@@ -20,7 +20,7 @@ app.add_middleware(
 
 app.include_router(chat_router)
 
-@app.exception_handler(Error)
+@app.exception_handler(BaseException)
 def exception_handler(request, exc):
     return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 

@@ -1,9 +1,5 @@
-from ai_server.api.exceptions.error import Error
+from ai_server.api.exceptions.error import BaseException
 
-class UnrecognizedMessageTypeException(Error):
+class UnrecognizedMessageTypeException(BaseException):
     def __init__(self, message: str, note: str):
         super().__init__(message, note, 'OPENAI-00', 500)
-    
-class AIResponseParseException(Error):
-    def __init__(self, message: str, note: str):
-        super().__init__(message, note, 'OPENAI-01', 500)

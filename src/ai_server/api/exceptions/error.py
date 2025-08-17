@@ -1,4 +1,4 @@
-class Error(Exception):
+class BaseException(Exception):
     def __init__(self, message: str, note: str, code: int, status_code: int):
         super().__init__(message)
         self.message = message

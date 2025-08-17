@@ -1,17 +1,24 @@
-from abc import ABC, abstractmethod
-from pydantic import ValidationError
-from constants import GPT_4_1_MINI
-from typing import List, Dict
+
+from constants import GPT_4_1
+
+from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
+from ai_server.api.exceptions.schema_exceptions import MessageParseException
+
+from ai_server.ai.providers.llm_provider import LLMProvider
+from ai_server.ai.tools.tools import Tool
+
 from ai_server.schemas.message import Message, Role, FunctionCallRequest
+
+import json
+from pydantic import ValidationError
+
 import openai
 from openai.types.responses import Response
 from openai.types.chat.chat_completion import ChatCompletion
+
 import os
-from datetime import datetime, timezone
-from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException, AIResponseParseException
-import json
-from ai_server.ai.providers.llm_provider import LLMProvider
-from ai_server.ai.tools.tools import Tool
+from typing import List, Dict
+from abc import ABC, abstractmethod
 
 class OpenAIProvider(LLMProvider, ABC):
     def __init__(self, temperature: float = 0.7) -> None:
@@ -26,15 +33,12 @@ class OpenAIProvider(LLMProvider, ABC):
         conversation_history: List[Message], 
         user_id: str, 
         session_id:str, 
+        turn_id: str,
         tools: List[Tool] = [], 
         tool_choice: str = "auto",
-        model_name: str = GPT_4_1_MINI
+        model_name: str = GPT_4_1
     ) -> List[Message]:
         pass
-
-    def _timestamp_to_unix_str(self, timestamp: datetime) -> str:
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        
 
 class OpenAIResponsesAPI(OpenAIProvider):
     def __init__(self, temperature: float = 0.7) -> None:
@@ -47,7 +51,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
                 role = "user"
             case Role.AI:
                 role = "assistant"
-                if message.tool_call_id:
+                if message.tool_call_id != "null":
                     return {
                         "call_id": message.tool_call_id,
                         "type": "function_call",
@@ -72,7 +76,8 @@ class OpenAIResponsesAPI(OpenAIProvider):
         response: Response, 
         user_id: str, 
         session_id: str,
-        tools: List[Tool]
+        turn_id: str,
+        tools: List[Tool],
     ) -> List[Message]:
         outputs = response.output
         messages: List[Message] = []
@@ -80,70 +85,76 @@ class OpenAIResponsesAPI(OpenAIProvider):
             for resp in outputs:
                 if resp.type == "function_call":
                     function_call = FunctionCallRequest(
-                        name=resp.function_call.name,
-                        arguments=json.loads(resp.function_call.arguments),
+                        name=resp.name,
+                        arguments=json.loads(resp.arguments),
                     )
                     message_ai = Message(
                         role=Role.AI,
-                        tool_call_id=resp.tool_call_id,
+                        tool_call_id=resp.call_id,
                         user_id=user_id,
                         session_id=session_id,
+                        turn_id=turn_id,
                         metadata={},
                         content='',
                         function_call=function_call,
-                        created_at=self._timestamp_to_unix_str(response.created_at),
                     )
-                    function_response = self._call_function(function_call, tools)
+                    # TODO: Opportunity to parallelize tool calls
+                    function_response = self._call_function(function_call, tools) 
                     message_tool = Message(
                         role=Role.TOOL,
-                        tool_call_id=resp.tool_call_id,
+                        tool_call_id=resp.call_id,
                         user_id=user_id,
+                        turn_id=turn_id,
                         session_id=session_id,
                         metadata={},
                         content=function_response,
                         function_call=None,
-                        created_at=self._timestamp_to_unix_str(response.created_at),
                     )
                     messages.append(message_ai)
                     messages.append(message_tool)
                 elif resp.type == "message":
                     message = Message(
                         role=Role.AI,
-                        tool_call_id=None,
+                        tool_call_id="null",
                         user_id=user_id,
                         session_id=session_id,
+                        turn_id=turn_id,
                         metadata={},
                         content=resp.content[0].text,
                         function_call=None,
-                        created_at=self._timestamp_to_unix_str(response.created_at),
                     )
                     messages.append(message)
                 else:
                     raise UnrecognizedMessageTypeException(message="Unrecognized message type", note=f"Message type: {resp.type} - Implementation does not exist")
             return messages
         except ValidationError as e:
-            raise AIResponseParseException(message="Failed to parse AI response from openai responses", note=str(e))
+            raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
     def generate_response(
         self, 
-        query: str, 
+        query: str | None, 
         conversation_history: List[Message], 
         user_id: str, 
-        session_id:str, 
+        session_id: str, 
+        turn_id: str,
         tools: List[Tool] = [], 
         tool_choice: str = "auto",
-        model_name: str = GPT_4_1_MINI
+        model_name: str = GPT_4_1
     ) -> List[Message]:
-        formatted_query = Message(
-            role=Role.HUMAN,
-            tool_call_id=None,
-            user_id=user_id,
-            session_id=session_id,
-            metadata={},
-            content=query,
-            function_call=None,
-        )
-        input_messages = conversation_history + [formatted_query]
+        if query:
+            formatted_query = Message(
+                role=Role.HUMAN,
+                tool_call_id="null",
+                user_id=user_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                metadata={},
+                content=query,
+                function_call=None,
+            )
+            input_messages = conversation_history + [formatted_query]
+        else:
+            input_messages = conversation_history
         input_messages = list(map(self._convert_to_openai_compatible_messages, input_messages))
         response = self.client.responses.create(
             model=model_name,
@@ -152,8 +163,8 @@ class OpenAIResponsesAPI(OpenAIProvider):
             tools=self._convert_tools_to_openai_compatible(tools),
             tool_choice=tool_choice,
         )
-        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, tools)
-        return [formatted_query, *ai_messages]
+        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
+        return [formatted_query, *ai_messages] if query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
@@ -166,7 +177,9 @@ class OpenAIResponsesAPI(OpenAIProvider):
                     "type": "object",
                     "properties": {},
                     "required": [],
+                    "additionalProperties": False,
                 },
+                "strict": True,
             }
             for arg in tool.arguments:
                 openai_tool["parameters"]["properties"][arg.name] = {
@@ -190,7 +203,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                 role = "user"
             case Role.AI:
                 role = "assistant"
-                if message.tool_call_id:
+                if message.tool_call_id != "null":
                     return {
                         "role": role,
                         "tool_calls": [
@@ -222,6 +235,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         response: ChatCompletion, 
         user_id: str, 
         session_id: str,
+        turn_id: str,
         tools: List[Tool]
     ) -> List[Message]:
         output = response.choices[0].message
@@ -232,13 +246,13 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             if content:
                 message = Message(
                     role=Role.AI,
-                    tool_call_id=None,
+                    tool_call_id="null",
                     user_id=user_id,
                     session_id=session_id,
+                    turn_id=turn_id,
                     metadata={},
                     content=content,
                     function_call=None,
-                    created_at=self._timestamp_to_unix_str(response.created),
                 )
                 return [message]
             if tool_calls:
@@ -252,10 +266,10 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         tool_call_id=tool_call.id,
                         user_id=user_id,
                         session_id=session_id,
+                        turn_id=turn_id,
                         metadata={},
                         content='',
                         function_call=function_call,
-                        created_at=self._timestamp_to_unix_str(response.created),
                     )
                     function_response = self._call_function(function_call, tools)
                     message_tool = Message(
@@ -263,37 +277,42 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         tool_call_id=tool_call.id,
                         user_id=user_id,
                         session_id=session_id,
+                        turn_id=turn_id,
                         metadata={},
                         content=function_response,
                         function_call=None,
-                        created_at=self._timestamp_to_unix_str(response.created),
                     )
                     messages.append(message_ai)
                     messages.append(message_tool)
             return messages
         except ValidationError as e:
-            raise AIResponseParseException(message="Failed to parse AI response from openai responses", note=str(e))
+            raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
     def generate_response(
         self, 
-        query: str, 
+        query: str | None, 
         conversation_history: List[Message], 
         user_id: str, 
-        session_id:str, 
+        session_id: str, 
+        turn_id: str,
         tools: List[Tool] = [], 
         tool_choice: str = "auto",
-        model_name: str = GPT_4_1_MINI
+        model_name: str = GPT_4_1
     ) -> List[Message]:
-        formatted_query = Message(
-            role=Role.HUMAN,
-            tool_call_id=None,
-            user_id=user_id,
-            session_id=session_id,
-            metadata={},
-            content=query,
-            function_call=None,
-        )
-        input_messages = conversation_history + [formatted_query]
+        if query:
+            formatted_query = Message(
+                role=Role.HUMAN,
+                tool_call_id="null",
+                user_id=user_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                metadata={},
+                content=query,
+                function_call=None,
+            )
+            input_messages = conversation_history + [formatted_query]
+        else:
+            input_messages = conversation_history
         input_messages = list(map(self._convert_to_openai_compatible_messages, input_messages))
         response = self.client.chat.completions.create(
             model=model_name,
@@ -302,8 +321,8 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             tools=self._convert_tools_to_openai_compatible(tools),
             tool_choice=tool_choice,
         )
-        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, tools)
-        return [formatted_query, *ai_messages]
+        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
+        return [formatted_query, *ai_messages] if query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
@@ -317,7 +336,9 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         "type": "object",
                         "properties": {},
                         "required": [],
+                        "additionalProperties": False,
                     },
+                    "strict": True,
                 },
             }
             for arg in tool.arguments:
