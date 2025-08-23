@@ -1,7 +1,7 @@
 from pydantic import BaseModel, model_validator
 from pydantic import Field
 from enum import Enum
-from typing import Self, List
+from typing import Self
 
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -26,7 +26,6 @@ class Message(BaseModel):
     session_id: str
     user_id: str
     message_id: str = Field(default_factory=lambda: uuid4().hex)
-    embedding: List[float] | None = None
     created_at: str = Field(default_factory=lambda: str(datetime.now(timezone.utc)))    
 
     @model_validator(mode='after')

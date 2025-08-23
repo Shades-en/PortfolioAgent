@@ -9,7 +9,6 @@ from ai_server.ai.tools.tools import Tool
 
 from ai_server.schemas.message import Message, Role, FunctionCallRequest
 
-import asyncio
 import json
 from pydantic import ValidationError
 
@@ -72,7 +71,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
             "content": message.content,
         }
 
-    async def _handle_ai_messages_and_tool_calls(
+    def _handle_ai_messages_and_tool_calls(
         self, 
         response: Response, 
         user_id: str, 
@@ -82,11 +81,6 @@ class OpenAIResponsesAPI(OpenAIProvider):
     ) -> List[Message]:
         outputs = response.output
         messages: List[Message] = []
-        
-        # Collect function calls and regular messages separately
-        function_call_tasks = []
-        function_call_messages = []
-        
         try:
             for resp in outputs:
                 if resp.type == "function_call":
@@ -104,12 +98,20 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         content='',
                         function_call=function_call,
                     )
-                    
-                    # Create task for parallel execution
-                    task = self._call_function(function_call, tools)
-                    function_call_tasks.append(task)
-                    function_call_messages.append((message_ai, resp.call_id))
-                    
+                    # TODO: Opportunity to parallelize tool calls
+                    function_response = self._call_function(function_call, tools) 
+                    message_tool = Message(
+                        role=Role.TOOL,
+                        tool_call_id=resp.call_id,
+                        user_id=user_id,
+                        turn_id=turn_id,
+                        session_id=session_id,
+                        metadata={},
+                        content=function_response,
+                        function_call=None,
+                    )
+                    messages.append(message_ai)
+                    messages.append(message_tool)
                 elif resp.type == "message":
                     message = Message(
                         role=Role.AI,
@@ -124,30 +126,11 @@ class OpenAIResponsesAPI(OpenAIProvider):
                     messages.append(message)
                 else:
                     raise UnrecognizedMessageTypeException(message="Unrecognized message type", note=f"Message type: {resp.type} - Implementation does not exist")
-            
-            # Execute all function calls in parallel
-            if function_call_tasks:
-                function_responses = await asyncio.gather(*function_call_tasks)
-                
-                # Create tool messages with the responses
-                for i, (message_ai, call_id) in enumerate(function_call_messages):
-                    message_tool = Message(
-                        role=Role.TOOL,
-                        tool_call_id=call_id,
-                        user_id=user_id,
-                        turn_id=turn_id,
-                        session_id=session_id,
-                        metadata={},
-                        content=function_responses[i],
-                        function_call=None,
-                    )
-                    messages.append(message_ai)
-                    messages.append(message_tool)
             return messages
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
-    async def generate_response(
+    def generate_response(
         self, 
         query: str | None, 
         conversation_history: List[Message], 
@@ -180,7 +163,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
             tools=self._convert_tools_to_openai_compatible(tools),
             tool_choice=tool_choice,
         )
-        ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
+        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
         return [formatted_query, *ai_messages] if query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
@@ -247,7 +230,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             "content": message.content,
         }
 
-    async def _handle_ai_messages_and_tool_calls(
+    def _handle_ai_messages_and_tool_calls(
         self, 
         response: ChatCompletion, 
         user_id: str, 
@@ -273,10 +256,6 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                 )
                 return [message]
             if tool_calls:
-                # Collect function calls for parallel execution
-                function_call_tasks = []
-                function_call_messages = []
-                
                 for tool_call in tool_calls:
                     function_call = FunctionCallRequest(
                         name=tool_call.function.name,
@@ -292,25 +271,15 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         content='',
                         function_call=function_call,
                     )
-                    
-                    # Create task for parallel execution
-                    task = self._call_function(function_call, tools)
-                    function_call_tasks.append(task)
-                    function_call_messages.append((message_ai, tool_call.id))
-                
-                # Execute all function calls in parallel
-                function_responses = await asyncio.gather(*function_call_tasks)
-                
-                # Create tool messages with the responses
-                for i, (message_ai, call_id) in enumerate(function_call_messages):
+                    function_response = self._call_function(function_call, tools)
                     message_tool = Message(
                         role=Role.TOOL,
-                        tool_call_id=call_id,
+                        tool_call_id=tool_call.id,
                         user_id=user_id,
                         session_id=session_id,
                         turn_id=turn_id,
                         metadata={},
-                        content=function_responses[i],
+                        content=function_response,
                         function_call=None,
                     )
                     messages.append(message_ai)
@@ -319,7 +288,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
-    async def generate_response(
+    def generate_response(
         self, 
         query: str | None, 
         conversation_history: List[Message], 
@@ -352,7 +321,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             tools=self._convert_tools_to_openai_compatible(tools),
             tool_choice=tool_choice,
         )
-        ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
+        ai_messages = self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
         return [formatted_query, *ai_messages] if query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:

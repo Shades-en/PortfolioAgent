@@ -45,7 +45,7 @@ class GetWeather(Tool):
         latitude: float = Field(..., description="The latitude of the location")
         longitude: float = Field(..., description="The longitude of the location")
     
-    async def __call__(self, arguments: Arguments) -> str:
+    def __call__(self, arguments: Arguments) -> str:
         return f"Weather for {arguments.latitude} {arguments.longitude} is sunny"
 
 class GetHoroscope(Tool):
@@ -59,7 +59,7 @@ class GetHoroscope(Tool):
     class Arguments(BaseModel):
         zodiac_sign: str = Field(..., description="The zodiac sign")
     
-    async def __call__(self, arguments: Arguments) -> str:
+    def __call__(self, arguments: Arguments) -> str:
         return f"Horoscope for {arguments.zodiac_sign} is sunny"
         
     
@@ -74,5 +74,5 @@ class GetCompanyName(Tool):
     class Arguments(BaseModel):
         pass
     
-    async def __call__(self, arguments: Arguments) -> str:
+    def __call__(self, arguments: Arguments) -> str:
         return "Company name is Lowe's"

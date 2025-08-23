@@ -18,8 +18,8 @@ class LLMProvider(ABC):
     ) -> List[Message]:
         pass
 
-    async def _call_function(self, function_call_request: FunctionCallRequest, tools: List[Tool]) -> str:
+    def _call_function(self, function_call_request: FunctionCallRequest, tools: List[Tool]) -> str:
         for tool in tools:
             if tool.name == function_call_request.name:
-                return await tool(tool.Arguments(**function_call_request.arguments))
+                return tool(tool.Arguments(**function_call_request.arguments))
         return ""
