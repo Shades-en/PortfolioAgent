@@ -6,20 +6,22 @@ from ai_server.api.exceptions.redis_exceptions import RedisIndexFailedException,
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
 from ai_server.schemas.message import Message
-from ai_server.schemas.role import Role
-from ai_server.schemas.function_call import FunctionCallRequest
+from ai_server.schemas.message import Role
+from ai_server.schemas.message import FunctionCallRequest
 from ai_server.schemas.redis import RedisConfig
 
-from typing import List
+from typing import List, Callable
+import json
+import functools
 
 from langchain_core.embeddings import Embeddings
-import json
 
 from redis import Redis
 from redisvl.index import SearchIndex
 from redisvl.query import FilterQuery, VectorQuery
 from redisvl.query.filter import Tag
 from redisvl.schema.schema import IndexSchema
+from redisvl.extensions.cache.llm import SemanticCache
 
 
 class RedisClient:
@@ -62,7 +64,13 @@ class RedisClient:
                 ],
             }
         self._conv_memory_index: SearchIndex = self.create_conv_memory_index()
-        
+        self.conv_memory_cache = SemanticCache(
+            name="agent_memory_cache",
+            redis_client=self.redis,
+            distance_threshold=0.1,
+            # TODO: Remove unneccessary filters and add embedding filter and figure out how retrieve it. If it doesnt allow you to retreive it then store it in custom field as well
+            filterable_fields=[field["name"] for field in self._index_schema["fields"] if field["type"] != "vector"],
+        )
         
     def create_conv_memory_index(self) -> SearchIndex:
         try:
@@ -79,8 +87,7 @@ class RedisClient:
     def add_message(self, messages: List[Message]) -> None:
         try:
             memory_data = []
-            embeddings = self.embedding_provider.embed_documents([message.content for message in messages])
-            for message, embedding in zip(messages, embeddings):
+            for message in messages:
                 memory = {
                     "message": message.content,
                     "role": message.role.value,
@@ -93,7 +100,7 @@ class RedisClient:
                     "turn_id": message.turn_id,
                     "memory_id": message.message_id,
                     "session_id": message.session_id,
-                    "embedding": embedding,
+                    "embedding": message.embedding,
                 }
                 memory_data.append(memory)
             self._conv_memory_index.load(memory_data)
@@ -127,8 +134,8 @@ class RedisClient:
             session_id_filter = Tag("session_id") == session_id
             user_id_filter = Tag("user_id") == user_id
             tool_call_id_filter = Tag("tool_call_id") == "null"
-            query_embedding = self.embedding_provider.embed_query(query)
             filter_ = session_id_filter & user_id_filter & tool_call_id_filter
+            query_embedding = self.embedding_provider.embed_query(query)
             vector_query = VectorQuery(
                 vector=query_embedding,
                 filter_expression=filter_,
@@ -210,3 +217,61 @@ class RedisClient:
                 note=str(e)
             )
         
+    def cache(self, func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            query = kwargs.get('query')
+            session_id = kwargs.get('session_id')
+            turn_id = kwargs.get('turn_id')
+            user_id = kwargs.get('user_id')
+            vector_query = self.embedding_provider.embed_query(query)
+            session_id_filter = Tag("session_id") == session_id
+            user_id_filter = Tag("user_id") == user_id
+            filter_ = session_id_filter & user_id_filter
+            if result := self.conv_memory_cache.check(
+                prompt=query,
+                vector=vector_query,
+                filter_expression=filter_,
+            ):
+                formatted_query = Message(
+                    role=Role.HUMAN,
+                    tool_call_id="null",
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    metadata={},
+                    content=query,
+                    function_call=None,
+                    embedding=vector_query,
+                )
+                formatted_result = Message(
+                    role=Role.AI,
+                    tool_call_id="null",
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    metadata={},
+                    content=result[0].get("response", ""),
+                    function_call=None,
+                )
+                return [formatted_query, formatted_result]
+            else:
+                result: List[Message] = func(*args, **kwargs)
+                for message in result:
+                    message.embedding = self.embedding_provider.embed_query(message.content)
+                if result[-1].role == Role.AI:
+                    self.conv_memory_cache.store(
+                        prompt=query,
+                        vector=result[-1].embedding,
+                        response=result[-1].content,
+                        filters={
+                            "metadata": result[-1].metadata,
+                            "user_id": user_id,
+                            "turn_id": turn_id,
+                            "session_id": session_id,
+                        }
+                    )
+                return result
+        return wrapper
+
+    
