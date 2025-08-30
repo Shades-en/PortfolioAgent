@@ -8,35 +8,29 @@ from ai_server.api.exceptions.schema_exceptions import MessageParseException
 from ai_server.schemas.message import Message
 from ai_server.schemas.message import Role
 from ai_server.schemas.message import FunctionCallRequest
-from ai_server.schemas.redis import RedisConfig
 
-from typing import List, Callable
+from ai_server.redis.embedding_cache import RedisEmbeddingsCache
+
+from typing import List, Self, Optional
 import json
-import functools
 
-from langchain_core.embeddings import Embeddings
-
-from redis import Redis
-from redisvl.index import SearchIndex
+from redisvl.index import AsyncSearchIndex
+from redis.asyncio import Redis as AsyncRedis
 from redisvl.query import FilterQuery, VectorQuery
 from redisvl.query.filter import Tag
 from redisvl.schema.schema import IndexSchema
-from redisvl.extensions.cache.llm import SemanticCache
+from redisvl.redis.utils import array_to_buffer
 
 
-class RedisClient:
-    def __init__(self, config: RedisConfig, embedding_provider: Embeddings) -> None:
-        self.redis: Redis = Redis(
-            host=config.host,
-            port=config.port,
-            username=config.username,
-            password=config.password,
-        )
-        self.embedding_provider: Embeddings = embedding_provider
+class RedisSessionManager:
+    def __init__(self, async_redis_client: AsyncRedis, embedding_cache: RedisEmbeddingsCache) -> None:
+        self.async_redis_client: AsyncRedis = async_redis_client
+        self.embedding_cache: RedisEmbeddingsCache = embedding_cache
+        self._conv_memory_index: Optional[AsyncSearchIndex] = None
         self._index_schema: dict = {
                 "index": {
-                    "name": "agent_memories",  # Index name for identification
-                    "prefix": "memory",       # Redis key prefix (memory:1, memory:2, etc.)
+                    "name": "agent_memories",
+                    "prefix": "memory",
                     "key_separator": ":",
                     "storage_type": "hash",
                 },
@@ -56,27 +50,34 @@ class RedisClient:
                         "type": "vector",
                         "attrs": {
                             "algorithm": "flat",
-                            "dims": 1536,
+                            "dims": self.embedding_cache.dims,
                             "distance_metric": "cosine",
                             "datatype": "float32",
                         },
                     },
                 ],
             }
-        self._conv_memory_index: SearchIndex = self.create_conv_memory_index()
-        self.conv_memory_cache = SemanticCache(
-            name="agent_memory_cache",
-            redis_client=self.redis,
-            distance_threshold=0.1,
-            # TODO: Remove unneccessary filters and add embedding filter and figure out how retrieve it. If it doesnt allow you to retreive it then store it in custom field as well
-            filterable_fields=[field["name"] for field in self._index_schema["fields"] if field["type"] != "vector"],
-        )
         
-    def create_conv_memory_index(self) -> SearchIndex:
+    
+    @classmethod
+    async def create(cls, async_redis_client: AsyncRedis, embedding_cache: RedisEmbeddingsCache) -> Self:
+        try:
+            redis_client = cls(async_redis_client=async_redis_client, embedding_cache=embedding_cache)
+            await redis_client.create_conv_memory_index()
+            return redis_client
+        except Exception as e:
+            raise RedisIndexFailedException(
+                message="Failed to create conversation memory index", 
+                note=str(e)
+            )
+
+        
+    async def create_conv_memory_index(self) -> AsyncSearchIndex:
         try:
             memory_schema = IndexSchema.from_dict(self._index_schema)
-            index = SearchIndex(redis_client=self.redis, schema=memory_schema, validate_on_load=True)
-            index.create(overwrite=True)
+            index = AsyncSearchIndex(redis_client=self.async_redis_client, schema=memory_schema, validate_on_load=True)
+            await index.create(overwrite=True)
+            self._conv_memory_index = index
             return index
         except Exception as e:
             raise RedisIndexFailedException(
@@ -84,10 +85,13 @@ class RedisClient:
                 note=str(e)
             )
     
-    def add_message(self, messages: List[Message]) -> None:
+    async def add_message(self, messages: List[Message]) -> None:
         try:
             memory_data = []
-            for message in messages:
+
+            embeddings = await self.embedding_cache.embed_documents([message.content for message in messages])
+
+            for message, embedding in zip(messages, embeddings):
                 memory = {
                     "message": message.content,
                     "role": message.role.value,
@@ -100,17 +104,19 @@ class RedisClient:
                     "turn_id": message.turn_id,
                     "memory_id": message.message_id,
                     "session_id": message.session_id,
-                    "embedding": message.embedding,
+                    "embedding": array_to_buffer(embedding, dtype="float32"),
                 }
                 memory_data.append(memory)
-            self._conv_memory_index.load(memory_data)
+            
+            await self._conv_memory_index.load(memory_data)
+
         except Exception as e:
             raise RedisMessageStoreFailedException(
                 message="Failed to add message to conversation memory", 
                 note=str(e)
             )
 
-    def get_all_messages_by_session_id(self, session_id: str, user_id: str) -> List[Message]:
+    async def get_all_messages_by_session_id(self, session_id: str, user_id: str) -> List[Message]:
         try:
             session_id_filter = Tag("session_id") == session_id
             user_id_filter = Tag("user_id") == user_id
@@ -120,7 +126,7 @@ class RedisClient:
                 num_results=1000,
                 return_fields=[field["name"] for field in self._index_schema["fields"] if field["type"] != "vector"],
             ).sort_by("created_at", asc=True)
-            results = self._conv_memory_index.query(filter_query)
+            results = await self._conv_memory_index.query(filter_query)
             messages = self._parse_messages(results)
             return messages
         except Exception as e:
@@ -129,13 +135,15 @@ class RedisClient:
                 note=str(e)
             )
 
-    def get_relevant_messages_by_session_id(self, session_id: str, user_id: str, query: str, top_n_turns: int = 3) -> List[Message]:
+    async def get_relevant_messages_by_session_id(self, session_id: str, user_id: str, query: str, top_n_turns: int = 3) -> List[Message]:
         try:
             session_id_filter = Tag("session_id") == session_id
             user_id_filter = Tag("user_id") == user_id
             tool_call_id_filter = Tag("tool_call_id") == "null"
             filter_ = session_id_filter & user_id_filter & tool_call_id_filter
-            query_embedding = self.embedding_provider.embed_query(query)
+
+            query_embedding = await self.embedding_cache.embed_query(query)
+            
             vector_query = VectorQuery(
                 vector=query_embedding,
                 filter_expression=filter_,
@@ -143,14 +151,15 @@ class RedisClient:
                 vector_field_name="embedding",
                 num_results=1000
             ).sort_by("vector_distance", asc=True)
-            results = self._conv_memory_index.query(vector_query)
             
-            # Get top 5 distinct turn_ids with their complete dictionaries
+            results = await self._conv_memory_index.query(vector_query)
+            
+            # Get top n distinct turn_ids with their complete dictionaries
             seen_turn_ids = set()
             top_n_turn_ids = []
             top_n_dicts = []
             
-            # First pass: collect top 5 distinct turn_ids and their first occurrence
+            # First pass: collect top n distinct turn_ids and their first occurrence
             for result_dict in results:
                 turn_id = result_dict.get('turn_id')
                 if turn_id and turn_id not in seen_turn_ids:
@@ -160,7 +169,7 @@ class RedisClient:
                     if len(top_n_turn_ids) == top_n_turns:
                         break
             
-            # Second pass: collect ALL dictionaries that have the same turn_ids as top 5
+            # Second pass: collect ALL dictionaries that have the same turn_ids as top n
             final_results = []
             for result_dict in results:
                 turn_id = result_dict.get('turn_id')
@@ -171,6 +180,8 @@ class RedisClient:
             final_results.sort(key=lambda x: x.get('created_at', ''))
             
             messages = self._parse_messages(final_results)
+
+            # All the semantically relevent messages in top n turns are returned
             return messages
         except Exception as e:
             raise RedisRetrievalFailedException(
@@ -208,70 +219,11 @@ class RedisClient:
                 note=str(e)
             )
 
-    def delete_conv_index_data(self):
+    async def delete_conv_index_data(self):
         try:
-            self.conv_memory_index.delete(drop=True)
+            await self._conv_memory_index.delete(drop=True)
         except Exception as e:
             raise RedisIndexDropFailedException(
                 message="Failed to drop conversation memory index", 
                 note=str(e)
             )
-        
-    def cache(self, func: Callable) -> Callable:
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            query = kwargs.get('query')
-            session_id = kwargs.get('session_id')
-            turn_id = kwargs.get('turn_id')
-            user_id = kwargs.get('user_id')
-            vector_query = self.embedding_provider.embed_query(query)
-            session_id_filter = Tag("session_id") == session_id
-            user_id_filter = Tag("user_id") == user_id
-            filter_ = session_id_filter & user_id_filter
-            if result := self.conv_memory_cache.check(
-                prompt=query,
-                vector=vector_query,
-                filter_expression=filter_,
-            ):
-                formatted_query = Message(
-                    role=Role.HUMAN,
-                    tool_call_id="null",
-                    user_id=user_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    metadata={},
-                    content=query,
-                    function_call=None,
-                    embedding=vector_query,
-                )
-                formatted_result = Message(
-                    role=Role.AI,
-                    tool_call_id="null",
-                    user_id=user_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    metadata={},
-                    content=result[0].get("response", ""),
-                    function_call=None,
-                )
-                return [formatted_query, formatted_result]
-            else:
-                result: List[Message] = func(*args, **kwargs)
-                for message in result:
-                    message.embedding = self.embedding_provider.embed_query(message.content)
-                if result[-1].role == Role.AI:
-                    self.conv_memory_cache.store(
-                        prompt=query,
-                        vector=result[-1].embedding,
-                        response=result[-1].content,
-                        filters={
-                            "metadata": result[-1].metadata,
-                            "user_id": user_id,
-                            "turn_id": turn_id,
-                            "session_id": session_id,
-                        }
-                    )
-                return result
-        return wrapper
-
-    

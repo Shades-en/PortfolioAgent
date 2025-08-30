@@ -18,7 +18,8 @@ class FunctionCallRequest(BaseModel):
 
 class Message(BaseModel):
     role: Role
-    tool_call_id: str
+    # tool_call_id is given "null" when not exists because redis tag field does not accept None
+    tool_call_id: str 
     metadata: dict
     content: str | None
     function_call: FunctionCallRequest | None
@@ -30,7 +31,7 @@ class Message(BaseModel):
     created_at: str = Field(default_factory=lambda: str(datetime.now(timezone.utc)))    
 
     @model_validator(mode='after')
-    def generate_hierarchical_ids(self) -> Self:
+    def validate_hierarchical_ids(self) -> Self:
         """Validate session_id format and generate hierarchical message_id."""
         # Validate that session_id follows x-y format (user_id_session_id)
         expected_session_prefix = f"{self.user_id}_"

@@ -1,5 +1,5 @@
 
-from constants import GPT_4_1
+from ai_server.constants import GPT_4_1
 
 from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
@@ -21,11 +21,44 @@ import os
 from typing import List, Dict
 from abc import ABC, abstractmethod
 
+# TODO: THE BELOW IS ONLY FOR TESTING -- NEED A BETTER WAY TO DO THIS AND MOVE IT
+
+from ai_server.redis.client import RedisClient
+from ai_server.redis.semantic_cache import ConversationMemoryCache
+from ai_server.redis.embedding_cache import RedisEmbeddingsCache
+from langchain_openai import OpenAIEmbeddings
+
+redis_config = RedisClient(
+        host=os.environ.get("REDIS_HOST"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
+        username=os.environ.get("REDIS_USERNAME"),
+        password=os.environ.get("REDIS_PASSWORD"),
+    )
+sync_redis_client = redis_config.get_sync_client()
+async_redis_client = redis_config.get_async_client()
+
+embedding_model = "text-embedding-3-small"
+
+embeddings = OpenAIEmbeddings(model=embedding_model)
+
+embedding_cache = RedisEmbeddingsCache(
+    async_redis_client=async_redis_client,
+    embedding_client=embeddings,
+    model_name=embedding_model,
+)
+
+semantic_cache = ConversationMemoryCache(
+    redis_client=sync_redis_client,
+    embedding_cache=embedding_cache,
+)
+
+# END OF TODO ---------------------------------------------
+
 class OpenAIProvider(LLMProvider, ABC):
     def __init__(self, temperature: float = 0.7) -> None:
         super().__init__("openai")
         self.temperature = temperature
-        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
     @abstractmethod
     def generate_response(
@@ -147,6 +180,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
+    @semantic_cache.cache
     async def generate_response(
         self, 
         query: str | None, 

@@ -28,7 +28,7 @@ class Tool(ABC, metaclass=RequireArgClassMeta):
             args.append(ToolArguments(
                 name=property_name,
                 description=property_schema["description"],
-                required=lambda x: x in arguments["required"],
+                required=property_name in arguments.get("required", []),
                 type=property_schema["type"],
             ))
         return args

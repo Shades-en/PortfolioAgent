@@ -5,10 +5,11 @@ from ai_server.ai.runner import Runner
 from ai_server.ai.agents.agent import AboutMeAgent
 from ai_server.ai.tools.tools import GetWeather, GetHoroscope
 
-from ai_server.session.session_client import RedisClient
+from ai_server.redis.client import RedisClient
 
 router = APIRouter()
-redis_client = RedisClient() # TODO: This should be in fast api startup events
+
+# redis_client = RedisClient() # TODO: This should be in fast api startup events
 
 @router.get("/health", tags=["Health"])
 def health_check():
@@ -23,12 +24,12 @@ def chat(chat_request: ChatRequest):
     )
     return Runner.run(agent, chat_request.query)
 
-@router.delete("/conversation_history", tags=["DEV - Conversation History"])
-def delete_all_conversation_history():
-    redis_client.delete_conv_index_data()
-    return {"status": "ok"} # TODO: change to DTO
+# @router.delete("/conversation_history", tags=["DEV - Conversation History"])
+# def delete_all_conversation_history():
+#     redis_client.delete_conv_index_data()
+#     return {"status": "ok"} # TODO: change to DTO
 
-@router.post("/conversation_history", tags=["DEV - Conversation History"])
-def create_conversation_history():
-    redis_client.create_conv_memory_index()
-    return {"status": "ok"} # TODO: change to DTO
+# @router.post("/conversation_history", tags=["DEV - Conversation History"])
+# def create_conversation_history():
+#     redis_client.create_conv_memory_index()
+#     return {"status": "ok"} # TODO: change to DTO
