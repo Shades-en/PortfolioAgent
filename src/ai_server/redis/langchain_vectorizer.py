@@ -5,6 +5,7 @@ allowing any LangChain embedding provider to be used with Redis vector operation
 """
 
 from typing import TYPE_CHECKING, List, Optional
+from pydantic import PrivateAttr
 
 if TYPE_CHECKING:
     from redisvl.extensions.cache.embeddings.embeddings import EmbeddingsCache
@@ -66,7 +67,7 @@ class LangchainTextVectorizer(BaseVectorizer):
         ... )
     """
 
-    _langchain_embeddings: "Embeddings"
+    _langchain_embeddings: "Embeddings" = PrivateAttr()
     
     def __init__(
         self,
@@ -105,17 +106,20 @@ class LangchainTextVectorizer(BaseVectorizer):
                 "langchain_embeddings must implement embed_query() method"
             )
         
-        # Store the LangChain embeddings instance BEFORE calling super()
-        self._langchain_embeddings = langchain_embeddings
-        
-        # Calculate dimensions before calling super()
-        calculated_dims = self._calculate_dims()
+        # Calculate dimensions using the provided embeddings instance
+        calculated_dims = self._calculate_dims(langchain_embeddings)
         
         # Initialize the base class with calculated dimensions
         super().__init__(model=model, dtype=dtype, dims=calculated_dims, cache=cache)
+        
+        # Set the private embeddings attribute AFTER BaseModel initialization
+        self._langchain_embeddings = langchain_embeddings
     
-    def _calculate_dims(self) -> int:
+    def _calculate_dims(self, embeddings: "Embeddings") -> int:
         """Calculate the dimensionality of the embedding model by making a test call.
+        
+        Args:
+            embeddings: The LangChain embeddings instance to use for the calculation.
         
         Returns:
             int: Dimensionality of the embedding model
@@ -125,7 +129,7 @@ class LangchainTextVectorizer(BaseVectorizer):
         """
         try:
             # Use LangChain's embed_query method directly for dimension calculation
-            embedding = self._langchain_embeddings.embed_query("dimension check")
+            embedding = embeddings.embed_query("dimension check")
             return len(embedding)
         except (KeyError, IndexError) as ke:
             raise ValueError(f"Unexpected response from the LangChain embeddings: {str(ke)}")

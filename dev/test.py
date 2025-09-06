@@ -1,6 +1,7 @@
 from ai_server.redis.client import RedisClient
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 from ai_server.redis.session_manager import RedisSessionManager
+from ai_server.redis.semantic_cache import ConversationMemoryCache
 from langchain_openai import OpenAIEmbeddings
 from ai_server.ai.providers.openai_provider import OpenAIChatCompletionAPI, OpenAIResponsesAPI
 from ai_server.schemas.message import Message, Role
@@ -22,13 +23,32 @@ embedding_model = "text-embedding-3-small"
 
 embeddings = OpenAIEmbeddings(model=embedding_model)
 
-embeddings.embed_documents(["Hello, world!"])
+# Create Redis client within the async context
+redis_config = RedisClient(
+    host=os.environ.get("REDIS_HOST"),
+    port=int(os.environ.get("REDIS_PORT", 6379)),
+    username=os.environ.get("REDIS_USERNAME"),
+    password=os.environ.get("REDIS_PASSWORD"),
+)
+sync_redis_client = redis_config.get_sync_client()
+async_redis_client = redis_config.get_async_client()
+
+embedding_cache = RedisEmbeddingsCache(
+    async_redis_client=async_redis_client,
+    embedding_client=embeddings,
+    model_name=embedding_model,
+)
+
+semantic_cache = ConversationMemoryCache(
+    redis_client=sync_redis_client,
+    embedding_cache=embedding_cache,
+)
 
 session_id = 'a7beae66086f4116af33af72ffd6b2f8_ee8fbe625269404b95a8802f794c9a47'
 user_id = 'a7beae66086f4116af33af72ffd6b2f8'
 
-openai_client_resp = OpenAIResponsesAPI()
-# openai_client_chat = OpenAIChatCompletionAPI()
+# openai_client = OpenAIResponsesAPI()
+openai_client = OpenAIChatCompletionAPI()
 
 turn_id = generate_id(8)
 turn_id = f"{session_id}_{turn_id}"
@@ -43,21 +63,38 @@ system_message = Message(
     function_call=None,
 )
 
-async def fill_data():
-    # Create Redis client within the async context
-    redis_config = RedisClient(
-        host=os.environ.get("REDIS_HOST"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        username=os.environ.get("REDIS_USERNAME"),
-        password=os.environ.get("REDIS_PASSWORD"),
+@semantic_cache.cache
+async def generate_response(
+        conversation_history: List[Message], 
+        redis_session_manager: RedisSessionManager, 
+        query: str,
+        session_id: str, 
+        user_id: str, 
+        turn_id: str,
+        **kwargs
+    ):
+    if conversation_history[-1].role != Role.TOOL:
+        start_time_semantic = time.time()
+        semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query)
+        end_time_semantic = time.time()
+        logger.info(f"Timer check Semantic: Turn {turn_id} took {end_time_semantic - start_time_semantic} seconds")
+        if len(semantic_conv_history) > 0:
+            conversation_history.extend(semantic_conv_history)
+    start = time.time()
+    messages = await openai_client.generate_response(
+        query=query,
+        conversation_history=conversation_history,
+        user_id=user_id,
+        turn_id=turn_id,
+        session_id=session_id,
+        tools=[GetWeather(), GetHoroscope(), GetCompanyName()]
     )
-    async_redis_client = redis_config.get_async_client()
+    end = time.time()
+    logger.info(f"Timer check LLM: Turn {turn_id} took {end - start} seconds")
+    return messages
 
-    embedding_cache = RedisEmbeddingsCache(
-        async_redis_client=async_redis_client,
-        embedding_client=embeddings,
-        model_name=embedding_model,
-    )
+
+async def fill_data():
     redis_session_manager = await RedisSessionManager.create(
         async_redis_client=async_redis_client,
         embedding_cache=embedding_cache,
@@ -66,12 +103,12 @@ async def fill_data():
     conversation_history: List[Message] = [system_message]
 
     queries = [
-        "hi",
-        "What is the weather today at paris",
-        "what is my horoscope, am airies and what is the weather at kolkata",
-        "what is the company name",
-        "what is the company name and weather in delhi",
-        "thanks",
+        # "hi",
+        # "What is the weather today at paris",
+        # "what is my horoscope, am airies and what is the weather at kolkata",
+        # "what is the company name",
+        # "what is the company name and weather in delhi",
+        # "thanks",
         "explain the working of fast api server",
         "explain the working of flask server",
         "explain how middlewares in fast api server can be configured",
@@ -84,45 +121,46 @@ async def fill_data():
     start_time = None
 
     while True:
-        query = None
 
         if step > max_step:
             raise Exception("Max step reached")
+        
+        if i >= len(queries):
+            break
         
         # if last message was an AI message, start a new turn of conversation or if its just the starting conversation
         if conversation_history[-1].role == Role.AI or conversation_history[-1].role == Role.SYSTEM:
             print("\n")
             turn_id = generate_id(8)
             turn_id = f"{session_id}_{turn_id}"
-            # start_time = time.time()
             query = queries[i]
+            start_time = time.time()
             print("Q:", query)
             if query == "exit":
                 break
             
-            start_time_semantic = time.time()
-            semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query)
-            end_time_semantic = time.time()
-            logger.info(f"Timer check Semantic: Turn {turn_id} took {end_time_semantic - start_time_semantic} seconds")
             conversation_history = [system_message]
-            if len(semantic_conv_history) > 0:
-                conversation_history.extend(semantic_conv_history)
             i+=1
             step = 1
         else:
             step+=1
         
+        # When LLM requests a tool call, skip semantic cache as Tool call messages are not stored in semantic cache 
+        # But we want to store in cache the AI response in response to the tool call, hence we only skip check cache
+        skip_semantic_cache_check_only = conversation_history[-1].role == Role.TOOL
+        
         start_time_openai = time.time()
-        messages = await openai_client_resp.generate_response(
-            query=query,
+        messages = await generate_response(
             conversation_history=conversation_history,
+            redis_session_manager=redis_session_manager,
+            query=query,
+            session_id=session_id,
             user_id=user_id,
             turn_id=turn_id,
-            session_id=session_id,
-            tools=[GetWeather(), GetHoroscope(), GetCompanyName()]
+            skip_semantic_cache=skip_semantic_cache_check_only,
         )
         end_time_openai = time.time()
-        logger.info(f"Timer check OpenAI: Turn {turn_id} took {end_time_openai - start_time_openai} seconds")
+        logger.info(f"Timer check Cache check of Query with LLM: Turn {turn_id} took {end_time_openai - start_time_openai} seconds")
         
         start_time_redis_add = time.time()
 
@@ -148,21 +186,9 @@ async def fill_data():
         logger.info(f"Timer check: Turn {turn_id} took {end_time - start_time} seconds")
 
 
+
 async def generate_answer(query: str, session_id: str, user_id: str) -> str:
-    # Create Redis client within the async context
-    redis_config = RedisClient(
-        host=os.environ.get("REDIS_HOST"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        username=os.environ.get("REDIS_USERNAME"),
-        password=os.environ.get("REDIS_PASSWORD"),
-    )
-    async_redis_client = redis_config.get_async_client()
-    
-    embedding_cache = RedisEmbeddingsCache(
-        async_redis_client=async_redis_client,
-        embedding_client=embeddings,
-        model_name=embedding_model,
-    )
+
     redis_session_manager = await RedisSessionManager.create(
         async_redis_client=async_redis_client,
         embedding_cache=embedding_cache,
@@ -172,33 +198,33 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
     max_step = 3
     conversation_history: List[Message] = [system_message]
     turn_id = f"{session_id}_{generate_id(8)}"
-    start_time_semantic = time.time()
-    semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query)
-    end_time_semantic = time.time()
-    logger.info(f"Timer check Semantic: Turn {turn_id} took {end_time_semantic - start_time_semantic} seconds")
-    if len(semantic_conv_history) > 0:
-        conversation_history.extend(semantic_conv_history)
+    
     while True:
         if step > max_step:
             raise Exception("Max step reached")
+
+        # When LLM requests a tool call, skip semantic cache as Tool call messages are not stored in semantic cache
+        skip_semantic_cache = conversation_history[-1].role == Role.TOOL
+
         start_time_openai = time.time()
-        messages = await openai_client_resp.generate_response(
-            query=query,
+        messages = await generate_response(
             conversation_history=conversation_history,
+            redis_session_manager=redis_session_manager,
+            query=query,
+            session_id=session_id,
             user_id=user_id,
             turn_id=turn_id,
-            session_id=session_id,
-            tools=[GetWeather(), GetHoroscope(), GetCompanyName()]
+            skip_semantic_cache=skip_semantic_cache
         )
         end_time_openai = time.time()
-        logger.info(f"Timer check OpenAI: Turn {turn_id} took {end_time_openai - start_time_openai} seconds")
+        logger.info(f"Timer check Cache check of Query with LLM: Turn {turn_id} took {end_time_openai - start_time_openai} seconds")
         
-        start_time_redis_add = time.time()
         await redis_session_manager.add_message(messages)
-        end_time_redis_add = time.time()
-        logger.info(f"Timer check Redis add: Turn {turn_id} took {end_time_redis_add - start_time_redis_add} seconds")
-        
+
+        # Only during user query we replace conv history with semantic history otherwise all messages generated by AI
+        # have to be added to conv history as it is, because they need to be processed for tool calls
         conversation_history.extend(messages)
+
         if len(messages) >= 1:
             if query:
                 for message in messages[1:]:
@@ -208,16 +234,17 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
                 for message in messages:
                     if message.content:
                         print(f"{message.role.value}:", message.content)
-        if conversation_history[-1].role == Role.AI:
+        if messages[-1].role == Role.AI:
             break
-        else:
+        elif messages[-1].role == Role.TOOL:
             step+=1
 
 if __name__ == "__main__":
-    query = "who am i"
-    asyncio.run(generate_answer(query, session_id, user_id))
-    # asyncio.run(fill_data())
+    query = "What is the weather today at paris"
+    # asyncio.run(generate_answer(query, session_id, user_id))
+    asyncio.run(fill_data())
     
 # Next steps
-# Find out why semantic cache is not working - vectorizer langchain embedding is not found
-# Move the code to somewhere better - the decorator: consider using Singleton pattern
+# 1. Move the code to somewhere better - the decorator: consider using Singleton pattern
+# 2. Performance analysis in notebook with multiple queries and redis cloud
+# 3. Threshold Optimization

@@ -42,6 +42,7 @@ class RedisEmbeddingsCache:
             if result := await self.cache.aget(text=text, model_name=self.model_name):
                 logger.info("Cached embedding found")
                 return result.get("embedding")
+        logger.info("New embedding computed")
         embedding = await self.embedding_client.aembed_query(text)
         if not skip_cache:
             await self.cache.aset( 
@@ -94,6 +95,8 @@ class RedisEmbeddingsCache:
                         "model_name": self.model_name,
                         "metadata": metadata,
                     }
+            else:
+                logger.info("No new embeddings need to becomputed")
             return [doc["embedding"] for doc in cached_embedded_docs]
             
         embeddings = await self.embedding_client.aembed_documents(documents)
@@ -109,5 +112,5 @@ class RedisEmbeddingsCache:
         logger.info(f"{len(documents)} Embeddings computed without storing in cache")
         return embeddings
 
-    def clear_cache(self):
-        self.cache.clear()
+    async def clear_cache(self):
+        await self.cache.aclear()

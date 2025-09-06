@@ -21,39 +21,6 @@ import os
 from typing import List, Dict
 from abc import ABC, abstractmethod
 
-# TODO: THE BELOW IS ONLY FOR TESTING -- NEED A BETTER WAY TO DO THIS AND MOVE IT
-
-from ai_server.redis.client import RedisClient
-from ai_server.redis.semantic_cache import ConversationMemoryCache
-from ai_server.redis.embedding_cache import RedisEmbeddingsCache
-from langchain_openai import OpenAIEmbeddings
-
-redis_config = RedisClient(
-        host=os.environ.get("REDIS_HOST"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        username=os.environ.get("REDIS_USERNAME"),
-        password=os.environ.get("REDIS_PASSWORD"),
-    )
-sync_redis_client = redis_config.get_sync_client()
-async_redis_client = redis_config.get_async_client()
-
-embedding_model = "text-embedding-3-small"
-
-embeddings = OpenAIEmbeddings(model=embedding_model)
-
-embedding_cache = RedisEmbeddingsCache(
-    async_redis_client=async_redis_client,
-    embedding_client=embeddings,
-    model_name=embedding_model,
-)
-
-semantic_cache = ConversationMemoryCache(
-    redis_client=sync_redis_client,
-    embedding_cache=embedding_cache,
-)
-
-# END OF TODO ---------------------------------------------
-
 class OpenAIProvider(LLMProvider, ABC):
     def __init__(self, temperature: float = 0.7) -> None:
         super().__init__("openai")
@@ -180,7 +147,6 @@ class OpenAIResponsesAPI(OpenAIProvider):
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
-    @semantic_cache.cache
     async def generate_response(
         self, 
         query: str | None, 
@@ -192,7 +158,11 @@ class OpenAIResponsesAPI(OpenAIProvider):
         tool_choice: str = "auto",
         model_name: str = GPT_4_1
     ) -> List[Message]:
-        if query:
+        # Consider Query only when it is not a tool call, 
+        # if last message is tool call we pass it to LLM for summarisation without user query
+        # as query associated with it is already stored in conversation history
+        pure_user_query = query and conversation_history[-1].role != Role.TOOL
+        if pure_user_query:
             formatted_query = Message(
                 role=Role.HUMAN,
                 tool_call_id="null",
@@ -215,7 +185,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
             tool_choice=tool_choice,
         )
         ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
-        return [formatted_query, *ai_messages] if query else ai_messages
+        return [formatted_query, *ai_messages] if pure_user_query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
@@ -364,7 +334,11 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         tool_choice: str = "auto",
         model_name: str = GPT_4_1
     ) -> List[Message]:
-        if query:
+        # Consider Query only when it is not a tool call, 
+        # if last message is tool call we pass it to LLM for summarisation without user query
+        # as query associated with it is already stored in conversation history
+        pure_user_query = query and conversation_history[-1].role != Role.TOOL
+        if pure_user_query:
             formatted_query = Message(
                 role=Role.HUMAN,
                 tool_call_id="null",
@@ -387,7 +361,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             tool_choice=tool_choice,
         )
         ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
-        return [formatted_query, *ai_messages] if query else ai_messages
+        return [formatted_query, *ai_messages] if pure_user_query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
