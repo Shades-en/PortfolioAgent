@@ -81,8 +81,12 @@ async def generate_response(
         if len(semantic_conv_history) > 0:
             conversation_history.extend(semantic_conv_history)
     start = time.time()
+    # Consider Query only when previous message is not a tool call, 
+    # if previous message is tool call we pass it to LLM for summarisation without user query
+    # as query associated with it is already stored in conversation history
+    pure_user_query = query and conversation_history[-1].role != Role.TOOL
     messages = await openai_client.generate_response(
-        query=query,
+        query=query if pure_user_query else None,
         conversation_history=conversation_history,
         user_id=user_id,
         turn_id=turn_id,
@@ -139,7 +143,6 @@ async def fill_data():
             if query == "exit":
                 break
             
-            conversation_history = [system_message]
             i+=1
             step = 1
         else:
@@ -173,7 +176,7 @@ async def fill_data():
         # have to be added to conv history as it is, because they need to be processed for tool calls
         conversation_history.extend(messages)
         if len(messages) >= 1:
-            if query:
+            if messages[0].role == Role.HUMAN:
                 for message in messages[1:]:
                     if message.content:
                         print(f"{message.role.value}:", message.content)
@@ -226,7 +229,7 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
         conversation_history.extend(messages)
 
         if len(messages) >= 1:
-            if query:
+            if messages[0].role == Role.HUMAN:
                 for message in messages[1:]:
                     if message.content:
                         print(f"{message.role.value}:", message.content)
@@ -240,11 +243,13 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
             step+=1
 
 if __name__ == "__main__":
-    query = "What is the weather today at paris"
-    # asyncio.run(generate_answer(query, session_id, user_id))
-    asyncio.run(fill_data())
+    query = "who are you"
+    asyncio.run(generate_answer(query, session_id, user_id))
+    # asyncio.run(fill_data())
     
 # Next steps
 # 1. Move the code to somewhere better - the decorator: consider using Singleton pattern
 # 2. Performance analysis in notebook with multiple queries and redis cloud
-# 3. Threshold Optimization
+# 3. Threshold Optimization - semantic cache
+# 4. Telemetry to see timing 
+# 5. Remove logic of cache skip from here and put it as part of tool call at semantic cache

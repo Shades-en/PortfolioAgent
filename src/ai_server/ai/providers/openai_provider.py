@@ -158,11 +158,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
         tool_choice: str = "auto",
         model_name: str = GPT_4_1
     ) -> List[Message]:
-        # Consider Query only when it is not a tool call, 
-        # if last message is tool call we pass it to LLM for summarisation without user query
-        # as query associated with it is already stored in conversation history
-        pure_user_query = query and conversation_history[-1].role != Role.TOOL
-        if pure_user_query:
+        if query:
             formatted_query = Message(
                 role=Role.HUMAN,
                 tool_call_id="null",
@@ -185,7 +181,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
             tool_choice=tool_choice,
         )
         ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
-        return [formatted_query, *ai_messages] if pure_user_query else ai_messages
+        return [formatted_query, *ai_messages] if query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
@@ -334,11 +330,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         tool_choice: str = "auto",
         model_name: str = GPT_4_1
     ) -> List[Message]:
-        # Consider Query only when it is not a tool call, 
-        # if last message is tool call we pass it to LLM for summarisation without user query
-        # as query associated with it is already stored in conversation history
-        pure_user_query = query and conversation_history[-1].role != Role.TOOL
-        if pure_user_query:
+        if query:
             formatted_query = Message(
                 role=Role.HUMAN,
                 tool_call_id="null",
@@ -361,7 +353,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             tool_choice=tool_choice,
         )
         ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
-        return [formatted_query, *ai_messages] if pure_user_query else ai_messages
+        return [formatted_query, *ai_messages] if query else ai_messages
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
