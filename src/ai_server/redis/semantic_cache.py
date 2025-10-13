@@ -1,6 +1,7 @@
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 from ai_server.schemas.message import Message, Role
 from ai_server.redis.langchain_vectorizer import LangchainTextVectorizer
+from ai_server.utils.singleton import SingletonMeta
 
 from typing import List, Callable
 import functools
@@ -14,7 +15,7 @@ from redisvl.query.filter import Tag
 
 logger = logging.getLogger(__name__)
 
-class ConversationMemoryCache:
+class ConversationMemoryCache(metaclass=SingletonMeta):
     def __init__(self, redis_client: Redis, embedding_cache: RedisEmbeddingsCache) -> None:
         self.redis_client: Redis = redis_client
         self.embedding_cache: RedisEmbeddingsCache = embedding_cache
@@ -43,7 +44,9 @@ class ConversationMemoryCache:
             session_id = kwargs.get('session_id')
             turn_id = kwargs.get('turn_id')
             user_id = kwargs.get('user_id')
-            skip_semantic_cache = kwargs.get('skip_semantic_cache', False)
+            conversation_history = kwargs.get('conversation_history')
+            # When LLM requests a tool call, skip semantic cache as Tool call messages are not stored in semantic cache
+            skip_semantic_cache = len(conversation_history) > 0 and conversation_history[-1].role == Role.TOOL
             if not skip_semantic_cache:
                 vector_query = await self.embedding_cache.embed_query(query)
                 session_id_filter = Tag("session_id") == session_id

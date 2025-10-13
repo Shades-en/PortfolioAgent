@@ -5,16 +5,19 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-server"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI server for portfolio"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "arize-otel>=0.10.0",
     "dotenv>=0.9.9",
     "fastapi>=0.116.1",
     "httpx>=0.28.1",
     "langchain>=0.3.27",
     "langchain-openai>=0.3.29",
     "openai>=1.99.1",
+    "openinference-instrumentation-openai>=0.1.39",
+    "opentelemetry-exporter-otlp>=1.37.0",
     "pylint>=3.3.8",
     "redis>=6.3.0",
     "redisvl>=0.8.0",

@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import List
+
 from ai_server.schemas.message import Message, FunctionCallRequest
 from ai_server.ai.tools.tools import Tool
+from ai_server.utils.singleton import SingletonABCMeta
 
-class LLMProvider(ABC):
+class LLMProvider(ABC, metaclass=SingletonABCMeta):
     def __init__(self, provider: str) -> None:
         self.provider = provider
 

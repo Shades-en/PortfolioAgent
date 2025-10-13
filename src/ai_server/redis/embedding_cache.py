@@ -3,12 +3,13 @@ from langchain_core.embeddings import Embeddings
 from redis.asyncio import Redis as AsyncRedis
 from typing import List
 import logging
+from ai_server.utils.singleton import SingletonMeta
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class RedisEmbeddingsCache:
+class RedisEmbeddingsCache(metaclass=SingletonMeta):
     def __init__(self, async_redis_client: AsyncRedis, embedding_client: Embeddings, model_name: str = None) -> None:
         self.async_redis_client: AsyncRedis = async_redis_client
         self.embedding_client: Embeddings = embedding_client

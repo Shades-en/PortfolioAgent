@@ -11,6 +11,8 @@ from ai_server.schemas.message import FunctionCallRequest
 
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 
+from ai_server.utils.singleton import SingletonMeta
+
 from typing import List, Self, Optional
 import json
 
@@ -22,7 +24,7 @@ from redisvl.schema.schema import IndexSchema
 from redisvl.redis.utils import array_to_buffer
 
 
-class RedisSessionManager:
+class RedisSessionManager(metaclass=SingletonMeta):
     def __init__(self, async_redis_client: AsyncRedis, embedding_cache: RedisEmbeddingsCache) -> None:
         self.async_redis_client: AsyncRedis = async_redis_client
         self.embedding_cache: RedisEmbeddingsCache = embedding_cache

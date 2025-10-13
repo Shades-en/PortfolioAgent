@@ -6,18 +6,29 @@ from langchain_openai import OpenAIEmbeddings
 from ai_server.ai.providers.openai_provider import OpenAIChatCompletionAPI, OpenAIResponsesAPI
 from ai_server.schemas.message import Message, Role
 from ai_server.utils.general import generate_id
-from ai_server.ai.tools.tools import GetWeather, GetHoroscope, GetCompanyName
+from ai_server.ai.tools.tools import GetWeather, GetHoroscope, GetCompanyName, Tool
 from typing import List
 import asyncio
 from dotenv import load_dotenv
 import time
 import logging
 import os
+from arize.otel import register
+from openinference.instrumentation.openai import OpenAIInstrumentor
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+tracer_provider = register(
+    space_id = os.getenv("ARIZE_SPACE_ID"),
+    api_key = os.getenv("ARIZE_API_KEY"),
+    project_name = os.getenv("ARIZE_PROJECT_NAME"),
+)
+
+OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
 
 embedding_model = "text-embedding-3-small"
 
@@ -71,7 +82,7 @@ async def generate_response(
         session_id: str, 
         user_id: str, 
         turn_id: str,
-        **kwargs
+        tools: List[Tool] = [],
     ):
     if conversation_history[-1].role != Role.TOOL:
         start_time_semantic = time.time()
@@ -91,7 +102,7 @@ async def generate_response(
         user_id=user_id,
         turn_id=turn_id,
         session_id=session_id,
-        tools=[GetWeather(), GetHoroscope(), GetCompanyName()]
+        tools=tools
     )
     end = time.time()
     logger.info(f"Timer check LLM: Turn {turn_id} took {end - start} seconds")
@@ -160,6 +171,7 @@ async def fill_data():
             session_id=session_id,
             user_id=user_id,
             turn_id=turn_id,
+            tools=[GetWeather(), GetHoroscope(), GetCompanyName()],
             skip_semantic_cache=skip_semantic_cache_check_only,
         )
         end_time_openai = time.time()
@@ -206,9 +218,6 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
         if step > max_step:
             raise Exception("Max step reached")
 
-        # When LLM requests a tool call, skip semantic cache as Tool call messages are not stored in semantic cache
-        skip_semantic_cache = conversation_history[-1].role == Role.TOOL
-
         start_time_openai = time.time()
         messages = await generate_response(
             conversation_history=conversation_history,
@@ -217,7 +226,7 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
             session_id=session_id,
             user_id=user_id,
             turn_id=turn_id,
-            skip_semantic_cache=skip_semantic_cache
+            tools=[GetWeather(), GetHoroscope(), GetCompanyName()],
         )
         end_time_openai = time.time()
         logger.info(f"Timer check Cache check of Query with LLM: Turn {turn_id} took {end_time_openai - start_time_openai} seconds")
@@ -248,8 +257,5 @@ if __name__ == "__main__":
     # asyncio.run(fill_data())
     
 # Next steps
-# 1. Move the code to somewhere better - the decorator: consider using Singleton pattern
 # 2. Performance analysis in notebook with multiple queries and redis cloud
-# 3. Threshold Optimization - semantic cache
 # 4. Telemetry to see timing 
-# 5. Remove logic of cache skip from here and put it as part of tool call at semantic cache
