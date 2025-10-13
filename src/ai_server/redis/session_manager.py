@@ -15,6 +15,8 @@ from ai_server.utils.singleton import SingletonMeta
 
 from typing import List, Self, Optional
 import json
+from datetime import datetime, timezone
+import asyncio
 
 from redisvl.index import AsyncSearchIndex
 from redis.asyncio import Redis as AsyncRedis
@@ -29,43 +31,42 @@ class RedisSessionManager(metaclass=SingletonMeta):
         self.async_redis_client: AsyncRedis = async_redis_client
         self.embedding_cache: RedisEmbeddingsCache = embedding_cache
         self._conv_memory_index: Optional[AsyncSearchIndex] = None
+        # Turn-level vector index: one document per turn (HUMAN+AI concatenated text)
         self._index_schema: dict = {
-                "index": {
-                    "name": "agent_memories",
-                    "prefix": "memory",
-                    "key_separator": ":",
-                    "storage_type": "hash",
-                },
-                "fields": [
-                    {"name": "message", "type": "text"},
-                    {"name": "role", "type": "tag"},
-                    {"name": "tool_call_id", "type": "tag"},
-                    {"name": "function_call", "type": "text"},
-                    {"name": "metadata", "type": "text"},
-                    {"name": "created_at", "type": "text"},
-                    {"name": "user_id", "type": "tag"},
-                    {"name": "turn_id", "type": "tag"},
-                    {"name": "memory_id", "type": "tag"},
-                    {"name": "session_id", "type": "tag"},
-                    {
-                        "name": "embedding",
-                        "type": "vector",
-                        "attrs": {
-                            "algorithm": "flat",
-                            "dims": self.embedding_cache.dims,
-                            "distance_metric": "cosine",
-                            "datatype": "float32",
-                        },
+            "index": {
+                "name": "agent_turns",
+                "prefix": "turn",
+                "key_separator": ":",
+                "storage_type": "hash",
+            },
+            "fields": [
+                {"name": "text", "type": "text"},
+                {"name": "created_at_epoch", "type": "numeric"},
+                {"name": "user_id", "type": "tag"},
+                {"name": "turn_id", "type": "tag"},
+                {"name": "session_id", "type": "tag"},
+                {
+                    "name": "embedding",
+                    "type": "vector",
+                    "attrs": {
+                        "algorithm": "hnsw",
+                        "dims": self.embedding_cache.dims,
+                        "distance_metric": "cosine",
+                        "datatype": "float32",
+                        "m": 24,
+                        "ef_construction": 200,
                     },
-                ],
-            }
+                },
+            ],
+        }
         
     
     @classmethod
     async def create(cls, async_redis_client: AsyncRedis, embedding_cache: RedisEmbeddingsCache) -> Self:
         try:
             redis_client = cls(async_redis_client=async_redis_client, embedding_cache=embedding_cache)
-            await redis_client.create_conv_memory_index()
+            if redis_client._conv_memory_index is None:
+                await redis_client.create_conv_memory_index()
             return redis_client
         except Exception as e:
             raise RedisIndexFailedException(
@@ -76,9 +77,11 @@ class RedisSessionManager(metaclass=SingletonMeta):
         
     async def create_conv_memory_index(self) -> AsyncSearchIndex:
         try:
+            if self._conv_memory_index is not None:
+                return self._conv_memory_index
             memory_schema = IndexSchema.from_dict(self._index_schema)
             index = AsyncSearchIndex(redis_client=self.async_redis_client, schema=memory_schema, validate_on_load=True)
-            await index.create(overwrite=True)
+            await index.create(overwrite=False)
             self._conv_memory_index = index
             return index
         except Exception as e:
@@ -89,28 +92,71 @@ class RedisSessionManager(metaclass=SingletonMeta):
     
     async def add_message(self, messages: List[Message]) -> None:
         try:
-            memory_data = []
+            if not messages:
+                return
 
-            embeddings = await self.embedding_cache.embed_documents([message.content for message in messages])
+            # Persist full turn (including TOOL messages) in KV store
+            turn_id = messages[0].turn_id
+            session_id = messages[0].session_id
+            user_id = messages[0].user_id
+            created_at = messages[-1].created_at
+            created_at_epoch = self._to_epoch_ms(created_at)
 
-            for message, embedding in zip(messages, embeddings):
-                memory = {
-                    "message": message.content,
-                    "role": message.role.value,
-                    "tool_call_id": message.tool_call_id if message.tool_call_id else "null",
-                    "function_call": message.function_call.model_dump_json() 
-                        if message.function_call else None,
-                    "metadata": json.dumps(message.metadata),
-                    "created_at": message.created_at,
-                    "user_id": message.user_id,
-                    "turn_id": message.turn_id,
-                    "memory_id": message.message_id,
-                    "session_id": message.session_id,
-                    "embedding": array_to_buffer(embedding, dtype="float32"),
-                }
-                memory_data.append(memory)
-            
-            await self._conv_memory_index.load(memory_data)
+            kv_key = f"turn:{turn_id}"
+            kv_payload = {
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "created_at": created_at,
+                "created_at_epoch": created_at_epoch,
+                "messages": [
+                    {
+                        "role": msg.role.value,
+                        "tool_call_id": msg.tool_call_id,
+                        "user_id": msg.user_id,
+                        "session_id": msg.session_id,
+                        "turn_id": msg.turn_id,
+                        "metadata": msg.metadata,
+                        "content": msg.content,
+                        "function_call": (msg.function_call.model_dump() if msg.function_call else None),
+                        "message_id": msg.message_id,
+                        "created_at": msg.created_at,
+                    }
+                    for msg in messages
+                ],
+            }
+            # Persist KV and update ZSET/SESSION SET in parallel (namespaced by user and session)
+            zset_key = f"user:{user_id}:session:{session_id}:turns"
+            await asyncio.gather(
+                self.async_redis_client.set(kv_key, json.dumps(kv_payload)),
+                self.async_redis_client.zadd(zset_key, {turn_id: created_at_epoch}),
+                self.async_redis_client.sadd(f"user:{user_id}:sessions", session_id),
+            )
+
+            # Build a turn-level text (HUMAN + AI only) for vector indexing
+            natural_text_parts = [
+                msg.content.strip()
+                for msg in messages
+                if msg.content and msg.content.strip() and msg.role in (Role.HUMAN, Role.AI)
+            ]
+
+            if not natural_text_parts:
+                # Nothing meaningful to index for this turn; KV still stored
+                return
+
+            turn_text = "\n".join(natural_text_parts)
+            embedding = (await self.embedding_cache.embed_documents([turn_text]))[0]
+
+            turn_doc = {
+                "text": turn_text,
+                "created_at": created_at,
+                "created_at_epoch": created_at_epoch,
+                "user_id": user_id,
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "embedding": array_to_buffer(embedding, dtype="float32"),
+            }
+            await self._conv_memory_index.load([turn_doc])
 
         except Exception as e:
             raise RedisMessageStoreFailedException(
@@ -123,68 +169,199 @@ class RedisSessionManager(metaclass=SingletonMeta):
             session_id_filter = Tag("session_id") == session_id
             user_id_filter = Tag("user_id") == user_id
             filter_ = session_id_filter & user_id_filter
+            # Get all turns for this session ordered by created_at_epoch (numeric)
             filter_query = FilterQuery(
                 filter_expression=filter_,
                 num_results=1000,
-                return_fields=[field["name"] for field in self._index_schema["fields"] if field["type"] != "vector"],
-            ).sort_by("created_at", asc=True)
+                return_fields=["turn_id", "created_at_epoch"],
+            ).sort_by("created_at_epoch", asc=True)
             results = await self._conv_memory_index.query(filter_query)
-            messages = self._parse_messages(results)
-            return messages
+
+            # Fetch full turn messages from KV and concatenate
+            all_messages: List[Message] = []
+            for doc in results:
+                tid = doc.get("turn_id")
+                if not tid:
+                    continue
+                turn_key = f"turn:{tid}"
+                raw = await self.async_redis_client.get(turn_key)
+                if not raw:
+                    continue
+                payload = json.loads(raw)
+                turn_msgs = self._parse_messages(payload.get("messages", []))
+                all_messages.extend(turn_msgs)
+            return all_messages
         except Exception as e:
             raise RedisRetrievalFailedException(
                 message="Failed to get messages from conversation memory", 
                 note=str(e)
             )
 
-    async def get_relevant_messages_by_session_id(self, session_id: str, user_id: str, query: str, top_n_turns: int = 3) -> List[Message]:
+    async def get_session_messages_page(
+        self,
+        session_id: str,
+        user_id: str,
+        num_turns: int = 20,
+        start_ts: float | int | None = None,
+        end_ts: float | int | None = None,
+        offset_num_turns: int | None = None,
+        newest_first: bool = True,
+    ) -> List[Message]:
+        """Paginate a session's messages using the session ZSET timeline.
+
+        Modes:
+        - Time window: provide start_ts and/or end_ts (epoch seconds or ms) to page by timestamp.
+          Uses Z[R]RANGEBYSCORE with LIMIT 0 num_turns.
+        - Offset mode: provide offset_num_turns (int) for index-based paging. Uses Z[R]RANGE.
+
+        Returns flattened Message list for the selected turns.
+        """
+        try:
+            # ZSET timeline key includes user_id for namespacing
+            zset_key = f"user:{user_id}:session:{session_id}:turns"
+            
+            # Decide retrieval mode
+            turn_ids: List[str] = []
+            if start_ts is not None or end_ts is not None:
+                # Normalize epoch to ms
+                min_score = -float("inf") if start_ts is None else self._normalize_epoch_input(start_ts)
+                max_score = float("inf") if end_ts is None else self._normalize_epoch_input(end_ts)
+                if newest_first:
+                    raw_ids = await self.async_redis_client.zrevrangebyscore(
+                        zset_key, max_score, min_score, start=0, num=num_turns
+                    )
+                else:
+                    raw_ids = await self.async_redis_client.zrangebyscore(
+                        zset_key, min_score, max_score, start=0, num=num_turns
+                    )
+                turn_ids = [tid.decode("utf-8") if isinstance(tid, (bytes, bytearray)) else tid for tid in raw_ids]
+            else:
+                # Offset mode (index-based). Default newest-first.
+                start_idx = offset_num_turns or 0
+                end_idx = start_idx + num_turns - 1
+                if newest_first:
+                    raw_ids = await self.async_redis_client.zrevrange(zset_key, start_idx, end_idx)
+                else:
+                    raw_ids = await self.async_redis_client.zrange(zset_key, start_idx, end_idx)
+                turn_ids = [tid.decode("utf-8") if isinstance(tid, (bytes, bytearray)) else tid for tid in raw_ids]
+
+            # Fetch turns from KV
+            messages: List[Message] = []
+            for tid in turn_ids:
+                raw = await self.async_redis_client.get(f"turn:{tid}")
+                if not raw:
+                    continue
+                payload = json.loads(raw)
+                msgs = self._parse_messages(payload.get("messages", []))
+                messages.extend(msgs)
+
+            return messages
+        except Exception as e:
+            raise RedisRetrievalFailedException(
+                message="Failed to get paged messages from session timeline",
+                note=str(e),
+            )
+
+    async def _delete_session_kv(self, session_id: str, user_id: str, batch_size: int = 1000) -> int:
+        """Delete all KV turn payloads and the session timeline ZSET for a given session/user.
+
+        Uses UNLINK in batches to avoid blocking Redis. Returns the number of KV keys unlinked.
+        """
+        try:
+            zset_key = f"user:{user_id}:session:{session_id}:turns"
+
+            # Get all turn_ids for this session
+            raw_ids = await self.async_redis_client.zrange(zset_key, 0, -1)
+            turn_ids: List[str] = [tid.decode("utf-8") if isinstance(tid, (bytes, bytearray)) else str(tid) for tid in raw_ids]
+
+            # Batch UNLINK KV keys
+            deleted_total = 0
+            if turn_ids:
+                kv_keys = [f"turn:{tid}" for tid in turn_ids]
+                for i in range(0, len(kv_keys), batch_size):
+                    chunk = kv_keys[i:i+batch_size]
+                    try:
+                        deleted_total += int(await self.async_redis_client.unlink(*chunk))
+                    except Exception:
+                        # Fallback to DEL if UNLINK not supported
+                        deleted_total += int(await self.async_redis_client.delete(*chunk))
+
+            # Remove timeline ZSET and session entry in user's set
+            await self.async_redis_client.delete(zset_key)
+            await self.async_redis_client.srem(f"user:{user_id}:sessions", session_id)
+
+            return deleted_total
+        except Exception as e:
+            raise RedisIndexDropFailedException(
+                message="Failed to delete session KV data",
+                note=str(e),
+            )
+
+    async def delete_user_kv(self, user_id: str, batch_size: int = 1000) -> int:
+        """Delete all KV turn payloads and timelines for all sessions of a user.
+
+        Returns total number of KV keys unlinked.
+        """
+        try:
+            sessions = await self.async_redis_client.smembers(f"user:{user_id}:sessions")
+            session_ids = [sid.decode("utf-8") if isinstance(sid, (bytes, bytearray)) else str(sid) for sid in sessions]
+            total_deleted = 0
+            for session_id in session_ids:
+                total_deleted += await self._delete_session_kv(session_id=session_id, user_id=user_id, batch_size=batch_size)
+            # Finally, remove the sessions set
+            await self.async_redis_client.delete(f"user:{user_id}:sessions")
+            return total_deleted
+        except Exception as e:
+            raise RedisIndexDropFailedException(
+                message="Failed to delete user KV data",
+                note=str(e),
+            )
+
+    async def get_relevant_messages_by_session_id(self, session_id: str, user_id: str, query: str, top_n_turns: int = 3, vector_top_k: int = 50) -> List[Message]:
         try:
             session_id_filter = Tag("session_id") == session_id
             user_id_filter = Tag("user_id") == user_id
-            tool_call_id_filter = Tag("tool_call_id") == "null"
-            filter_ = session_id_filter & user_id_filter & tool_call_id_filter
+            filter_ = session_id_filter & user_id_filter
 
             query_embedding = await self.embedding_cache.embed_query(query)
             
             vector_query = VectorQuery(
                 vector=query_embedding,
                 filter_expression=filter_,
-                return_fields=[field["name"] for field in self._index_schema["fields"] if field["type"] != "vector"],
+                return_fields=["turn_id"],
                 vector_field_name="embedding",
-                num_results=1000
+                num_results=max(vector_top_k, top_n_turns)
             ).sort_by("vector_distance", asc=True)
             
             results = await self._conv_memory_index.query(vector_query)
             
-            # Get top n distinct turn_ids with their complete dictionaries
+            # Collect top n distinct turn_ids
             seen_turn_ids = set()
             top_n_turn_ids = []
-            top_n_dicts = []
             
-            # First pass: collect top n distinct turn_ids and their first occurrence
             for result_dict in results:
                 turn_id = result_dict.get('turn_id')
                 if turn_id and turn_id not in seen_turn_ids:
                     seen_turn_ids.add(turn_id)
                     top_n_turn_ids.append(turn_id)
-                    top_n_dicts.append(result_dict)
                     if len(top_n_turn_ids) == top_n_turns:
                         break
-            
-            # Second pass: collect ALL dictionaries that have the same turn_ids as top n
-            final_results = []
-            for result_dict in results:
-                turn_id = result_dict.get('turn_id')
-                if turn_id in top_n_turn_ids:
-                    final_results.append(result_dict)
-            
-            # Sort by created_at in ascending order
-            final_results.sort(key=lambda x: x.get('created_at', ''))
-            
-            messages = self._parse_messages(final_results)
 
-            # All the semantically relevent messages in top n turns are returned
-            return messages
+            if not top_n_turn_ids:
+                return []
+
+            # Fetch full turn messages from KV for the selected turns
+            relevant_messages: List[Message] = []
+            for tid in top_n_turn_ids:
+                raw = await self.async_redis_client.get(f"turn:{tid}")
+                if not raw:
+                    continue
+                payload = json.loads(raw)
+                msgs = self._parse_messages(payload.get("messages", []))
+                relevant_messages.extend(msgs)
+
+
+            return relevant_messages
         except Exception as e:
             raise RedisRetrievalFailedException(
                 message="Failed to get relevant messages from conversation memory", 
@@ -195,23 +372,27 @@ class RedisSessionManager(metaclass=SingletonMeta):
         try:
             messages = []
             for message in messages_dict:
-                if message.get("function_call"):
-                    function = json.loads(message.get("function_call", {}))
-                    if function.get("name"):
-                        function_call = FunctionCallRequest(
-                            name=function.get("name", None),
-                            arguments=function.get("arguments", None),
-                        )
-                else:
-                    function_call = None
+                function_field = message.get("function_call")
+                function_call = None
+                if function_field:
+                    try:
+                        # function_call might be a JSON string or already a dict
+                        function = json.loads(function_field) if isinstance(function_field, str) else function_field
+                        if function.get("name"):
+                            function_call = FunctionCallRequest(
+                                name=function.get("name", None),
+                                arguments=function.get("arguments", None),
+                            )
+                    except Exception:
+                        function_call = None
                 messages.append(Message(
                     role=Role(message["role"]),
                     tool_call_id=message.get("tool_call_id", "null"),
                     user_id=message["user_id"],
                     session_id=message["session_id"],
                     turn_id=message["turn_id"],
-                    metadata=json.loads(message["metadata"]),
-                    content=message["message"],
+                    metadata=message.get("metadata", {}),
+                    content=message.get("content"),
                     function_call=function_call,
                 ))
             return messages
@@ -229,3 +410,26 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 message="Failed to drop conversation memory index", 
                 note=str(e)
             )
+
+    def _to_epoch_ms(self, ts: str) -> int:
+        """Convert ISO-like timestamp string to epoch milliseconds.
+        Falls back to current time on parse failure.
+        """
+        try:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    def _normalize_epoch_input(self, value: float | int) -> int:
+        """Normalize epoch seconds or milliseconds to milliseconds as integer."""
+        try:
+            v = float(value)
+            # Heuristic: if seconds (< 1e12), convert to ms
+            if v < 1e12:
+                v *= 1000.0
+            return int(v)
+        except Exception:
+            return 0

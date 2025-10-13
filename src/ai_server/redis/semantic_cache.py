@@ -45,10 +45,10 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
             turn_id = kwargs.get('turn_id')
             user_id = kwargs.get('user_id')
             conversation_history = kwargs.get('conversation_history')
+            explicit_skip = kwargs.get('skip_semantic_cache', False)
             # When LLM requests a tool call, skip semantic cache as Tool call messages are not stored in semantic cache
-            skip_semantic_cache = len(conversation_history) > 0 and conversation_history[-1].role == Role.TOOL
-            if not skip_semantic_cache:
-                vector_query = await self.embedding_cache.embed_query(query)
+            skip_semantic_cache_retrieval = (len(conversation_history) > 0 and conversation_history[-1].role == Role.TOOL)
+            if not skip_semantic_cache_retrieval and not explicit_skip:
                 session_id_filter = Tag("session_id") == session_id
                 user_id_filter = Tag("user_id") == user_id
                 filter_ = session_id_filter & user_id_filter
@@ -66,7 +66,7 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
                         metadata={},
                         content=query,
                         function_call=None,
-                        embedding=vector_query,
+                        embedding=None,
                     )
                     ai_response = result[0].get("response", "")
                     
@@ -77,7 +77,6 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
                     except (json.JSONDecodeError, TypeError):
                         ai_metadata = {}
                         
-                    ai_embedding = await self.embedding_cache.embed_query(ai_response)  
                     formatted_result = Message(
                         role=Role.AI,
                         tool_call_id="null",
@@ -87,13 +86,13 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
                         metadata=ai_metadata,
                         content=ai_response,
                         function_call=None,
-                        embedding=ai_embedding,
+                        embedding=None,
                     )
                     return [formatted_query, formatted_result]
                 else:
                     logger.info(f"Semantic cache miss for query: {query}")
             response: List[Message] = await func(*args, **kwargs)
-            if response[-1].role == Role.AI:
+            if response[-1].role == Role.AI and not explicit_skip:
                 # Serialize metadata to JSON string to avoid Redis dictionary error
                 metadata_json = json.dumps(response[-1].metadata) if response[-1].metadata else "{}"
                 

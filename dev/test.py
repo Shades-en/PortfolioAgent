@@ -15,6 +15,7 @@ import logging
 import os
 from arize.otel import register
 from openinference.instrumentation.openai import OpenAIInstrumentor
+from opentelemetry import trace
 
 
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,9 @@ OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
 embedding_model = "text-embedding-3-small"
 
 embeddings = OpenAIEmbeddings(model=embedding_model)
+
+# Tracer for custom spans in this module
+tracer = trace.get_tracer(__name__)
 
 # Create Redis client within the async context
 redis_config = RedisClient(
@@ -84,29 +88,57 @@ async def generate_response(
         turn_id: str,
         tools: List[Tool] = [],
     ):
-    if conversation_history[-1].role != Role.TOOL:
-        start_time_semantic = time.time()
-        semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query)
-        end_time_semantic = time.time()
-        logger.info(f"Timer check Semantic: Turn {turn_id} took {end_time_semantic - start_time_semantic} seconds")
-        if len(semantic_conv_history) > 0:
-            conversation_history.extend(semantic_conv_history)
-    start = time.time()
-    # Consider Query only when previous message is not a tool call, 
-    # if previous message is tool call we pass it to LLM for summarisation without user query
-    # as query associated with it is already stored in conversation history
-    pure_user_query = query and conversation_history[-1].role != Role.TOOL
-    messages = await openai_client.generate_response(
-        query=query if pure_user_query else None,
-        conversation_history=conversation_history,
-        user_id=user_id,
-        turn_id=turn_id,
-        session_id=session_id,
-        tools=tools
-    )
-    end = time.time()
-    logger.info(f"Timer check LLM: Turn {turn_id} took {end - start} seconds")
-    return messages
+    with tracer.start_as_current_span(
+        "generate_response",
+        attributes={
+            "app.session_id": session_id,
+            "app.user_id": user_id,
+            "app.turn_id": turn_id,
+            "app.query": query or "",
+        },
+    ):
+        if conversation_history[-1].role != Role.TOOL:
+            start_time_semantic = time.time()
+            with tracer.start_as_current_span(
+                "semantic_retrieval",
+                attributes={
+                    "app.session_id": session_id,
+                    "app.user_id": user_id,
+                    "app.turn_id": turn_id,
+                },
+            ):
+                semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query)
+            end_time_semantic = time.time()
+            logger.info(f"Timer check Semantic: Turn {turn_id} took {end_time_semantic - start_time_semantic} seconds")
+            if len(semantic_conv_history) > 0:
+                if conversation_history[-1].role != Role.SYSTEM:
+                    conversation_history.extend(semantic_conv_history)
+
+        start = time.time()
+        # Consider Query only when previous message is not a tool call, 
+        # if previous message is tool call we pass it to LLM for summarisation without user query
+        # as query associated with it is already stored in conversation history
+        pure_user_query = query and conversation_history[-1].role != Role.TOOL
+        with tracer.start_as_current_span(
+            "llm_generate_response",
+            attributes={
+                "app.session_id": session_id,
+                "app.user_id": user_id,
+                "app.turn_id": turn_id,
+                "app.pure_user_query": bool(pure_user_query),
+            },
+        ):
+            messages = await openai_client.generate_response(
+                query=query if pure_user_query else None,
+                conversation_history=conversation_history,
+                user_id=user_id,
+                turn_id=turn_id,
+                session_id=session_id,
+                tools=tools
+            )
+        end = time.time()
+        logger.info(f"Timer check LLM: Turn {turn_id} took {end - start} seconds")
+        return messages
 
 
 async def fill_data():
@@ -203,57 +235,77 @@ async def fill_data():
 
 
 async def generate_answer(query: str, session_id: str, user_id: str) -> str:
-
-    redis_session_manager = await RedisSessionManager.create(
-        async_redis_client=async_redis_client,
-        embedding_cache=embedding_cache,
-    )
-    
-    step = 1
-    max_step = 3
-    conversation_history: List[Message] = [system_message]
-    turn_id = f"{session_id}_{generate_id(8)}"
-    
-    while True:
-        if step > max_step:
-            raise Exception("Max step reached")
-
-        start_time_openai = time.time()
-        messages = await generate_response(
-            conversation_history=conversation_history,
-            redis_session_manager=redis_session_manager,
-            query=query,
-            session_id=session_id,
-            user_id=user_id,
-            turn_id=turn_id,
-            tools=[GetWeather(), GetHoroscope(), GetCompanyName()],
+    with tracer.start_as_current_span(
+        "generate_answer",
+        attributes={
+            "app.session_id": session_id,
+            "app.user_id": user_id,
+            "app.input.query": query or "",
+        },
+    ):
+        redis_session_manager = await RedisSessionManager.create(
+            async_redis_client=async_redis_client,
+            embedding_cache=embedding_cache,
         )
-        end_time_openai = time.time()
-        logger.info(f"Timer check Cache check of Query with LLM: Turn {turn_id} took {end_time_openai - start_time_openai} seconds")
         
-        await redis_session_manager.add_message(messages)
+        step = 1
+        max_step = 3
+        conversation_history: List[Message] = [system_message]
+        turn_id = f"{session_id}_{generate_id(8)}"
+        
+        while True:
+            if step > max_step:
+                raise Exception("Max step reached")
 
-        # Only during user query we replace conv history with semantic history otherwise all messages generated by AI
-        # have to be added to conv history as it is, because they need to be processed for tool calls
-        conversation_history.extend(messages)
+            start_time_openai = time.time()
+            messages = await generate_response(
+                conversation_history=conversation_history,
+                redis_session_manager=redis_session_manager,
+                query=query,
+                session_id=session_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                tools=[GetWeather(), GetHoroscope(), GetCompanyName()],
+            )
+            end_time_openai = time.time()
+            logger.info(f"Timer check Cache check of Query with LLM: Turn {turn_id} took {end_time_openai - start_time_openai} seconds")
+            
+            # Add messages to long-term store under its own span
+            with tracer.start_as_current_span(
+                "redis_add_message",
+                attributes={
+                    "app.session_id": session_id,
+                    "app.user_id": user_id,
+                    "app.turn_id": turn_id,
+                    "app.message_count": len(messages),
+                },
+            ):
+                await redis_session_manager.add_message(messages)
 
-        if len(messages) >= 1:
-            if messages[0].role == Role.HUMAN:
-                for message in messages[1:]:
-                    if message.content:
-                        print(f"{message.role.value}:", message.content)
-            else:
-                for message in messages:
-                    if message.content:
-                        print(f"{message.role.value}:", message.content)
-        if messages[-1].role == Role.AI:
-            break
-        elif messages[-1].role == Role.TOOL:
-            step+=1
+            # Only during user query we replace conv history with semantic history otherwise all messages generated by AI
+            # have to be added to conv history as it is, because they need to be processed for tool calls
+            conversation_history.extend(messages)
+
+            if len(messages) >= 1:
+                if messages[0].role == Role.HUMAN:
+                    for message in messages[1:]:
+                        if message.content:
+                            print(f"{message.role.value}:", message.content)
+                else:
+                    for message in messages:
+                        if message.content:
+                            print(f"{message.role.value}:", message.content)
+            if messages[-1].role == Role.AI:
+                break
+            elif messages[-1].role == Role.TOOL:
+                step+=1
 
 if __name__ == "__main__":
-    query = "who are you"
-    asyncio.run(generate_answer(query, session_id, user_id))
+    while True:
+        query = input("You: ")
+        if query == "exit":
+            break
+        asyncio.run(generate_answer(query, session_id, user_id))
     # asyncio.run(fill_data())
     
 # Next steps
