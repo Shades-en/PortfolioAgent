@@ -3,6 +3,7 @@ from langchain_core.embeddings import Embeddings
 from redis.asyncio import Redis as AsyncRedis
 from typing import List
 import logging
+from ai_server.ai.providers.embedding_provider import EmbeddingProvider
 from ai_server.utils.singleton import SingletonMeta
 
 logging.basicConfig(level=logging.INFO)
@@ -10,32 +11,16 @@ logger = logging.getLogger(__name__)
 
 
 class RedisEmbeddingsCache(metaclass=SingletonMeta):
-    def __init__(self, async_redis_client: AsyncRedis, embedding_client: Embeddings, model_name: str = None) -> None:
+    def __init__(self, async_redis_client: AsyncRedis, embedding_provider: EmbeddingProvider) -> None:
         self.async_redis_client: AsyncRedis = async_redis_client
-        self.embedding_client: Embeddings = embedding_client
-        self.model_name: str = self._get_model_name(embedding_client, model_name)
+        self.embedding_client: Embeddings = embedding_provider.client
+        self.model_name: str = embedding_provider.model_name
         self.cache = EmbeddingsCache(
             name="embedcache",
             async_redis_client=async_redis_client,
             ttl=None,
         )
-        self.dims = self._set_dimension()
-    
-    def _set_dimension(self) -> int:
-        try:
-            embedding = self.embedding_client.embed_query("dimension check")
-            return len(embedding)
-        except (KeyError, IndexError) as ke:
-            raise ValueError(f"Unexpected response from the LangChain embeddings: {str(ke)}")
-        except Exception as e:
-            raise ValueError(f"Error setting embedding model dimensions: {str(e)}")
-    
-    def _get_model_name(self, client: Embeddings, model_name: str = None) -> str:
-        if model_name:
-            return model_name
-        if hasattr(client, "model"):
-            return client.model
-        return "unknown"
+        self.dims = embedding_provider.dimensions
 
     async def embed_query(self, text: str, metadata: dict = None, skip_cache: bool = False) -> List[float]:
         if not skip_cache:

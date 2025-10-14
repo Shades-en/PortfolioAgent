@@ -31,7 +31,6 @@ class RedisSessionManager(metaclass=SingletonMeta):
         self.async_redis_client: AsyncRedis = async_redis_client
         self.embedding_cache: RedisEmbeddingsCache = embedding_cache
         self._conv_memory_index: Optional[AsyncSearchIndex] = None
-        # Turn-level vector index: one document per turn (HUMAN+AI concatenated text)
         self._index_schema: dict = {
             "index": {
                 "name": "agent_turns",
@@ -127,11 +126,6 @@ class RedisSessionManager(metaclass=SingletonMeta):
             }
             # Persist KV and update ZSET/SESSION SET in parallel (namespaced by user and session)
             zset_key = f"user:{user_id}:session:{session_id}:turns"
-            await asyncio.gather(
-                self.async_redis_client.set(kv_key, json.dumps(kv_payload)),
-                self.async_redis_client.zadd(zset_key, {turn_id: created_at_epoch}),
-                self.async_redis_client.sadd(f"user:{user_id}:sessions", session_id),
-            )
 
             # Build a turn-level text (HUMAN + AI only) for vector indexing
             natural_text_parts = [
@@ -156,7 +150,13 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 "session_id": session_id,
                 "embedding": array_to_buffer(embedding, dtype="float32"),
             }
-            await self._conv_memory_index.load([turn_doc])
+
+            await asyncio.gather(
+                self.async_redis_client.set(kv_key, json.dumps(kv_payload)),
+                self.async_redis_client.zadd(zset_key, {turn_id: created_at_epoch}),
+                self.async_redis_client.sadd(f"user:{user_id}:sessions", session_id),
+                self._conv_memory_index.load([turn_doc])
+            )
 
         except Exception as e:
             raise RedisMessageStoreFailedException(

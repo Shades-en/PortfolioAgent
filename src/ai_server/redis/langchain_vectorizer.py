@@ -75,6 +75,7 @@ class LangchainTextVectorizer(BaseVectorizer):
         model: str = "langchain-model",
         dtype: str = "float32",
         cache: Optional["EmbeddingsCache"] = None,
+        dimensions: Optional[int] = None,
         **kwargs,
     ):
         """Initialize the LangChain text vectorizer.
@@ -89,6 +90,8 @@ class LangchainTextVectorizer(BaseVectorizer):
                 Defaults to 'float32'.
             cache: Optional EmbeddingsCache instance to cache embeddings for
                 better performance with repeated texts. Defaults to None.
+            dimensions: Optional dimensionality of the embedding model. If not provided,
+                it will be calculated using the provided embeddings instance.
             **kwargs: Additional parameters (currently unused but maintained for compatibility).
         
         Raises:
@@ -107,7 +110,7 @@ class LangchainTextVectorizer(BaseVectorizer):
             )
         
         # Calculate dimensions using the provided embeddings instance
-        calculated_dims = self._calculate_dims(langchain_embeddings)
+        calculated_dims = dimensions or self._calculate_dims(langchain_embeddings)
         
         # Initialize the base class with calculated dimensions
         super().__init__(model=model, dtype=dtype, dims=calculated_dims, cache=cache)

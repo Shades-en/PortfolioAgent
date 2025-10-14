@@ -1,10 +1,11 @@
 
-from ai_server.constants import GPT_4_1
+from ai_server.constants import GPT_4_1, OPENAI
 
 from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
 from ai_server.ai.providers.llm_provider import LLMProvider
+from ai_server.ai.providers.embedding_provider import EmbeddingProvider
 from ai_server.ai.tools.tools import Tool
 
 from ai_server.schemas.message import Message, Role, FunctionCallRequest
@@ -12,6 +13,7 @@ from ai_server.schemas.message import Message, Role, FunctionCallRequest
 import asyncio
 import json
 from pydantic import ValidationError
+from langchain_openai import OpenAIEmbeddings
 
 import openai
 from openai.types.responses import Response
@@ -23,7 +25,7 @@ from abc import ABC, abstractmethod
 
 class OpenAIProvider(LLMProvider, ABC):
     def __init__(self, temperature: float = 0.7) -> None:
-        super().__init__("openai")
+        super().__init__(OPENAI)
         self.temperature = temperature
         self.client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
@@ -382,3 +384,19 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             openai_tools.append(openai_tool)
         return openai_tools 
         
+
+class OpenAIEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, model_name: str = "text-embedding-3-small") -> None:
+        self.model_name = model_name
+        self.client = OpenAIEmbeddings(model=model_name)
+        self.dimensions = self._set_dimension()
+        super().__init__(OPENAI, self.client, self.model_name, self.dimensions)
+    
+    def _set_dimension(self) -> int:
+        try:
+            embedding = self.client.embed_query("dimension check")
+            return len(embedding)
+        except (KeyError, IndexError) as ke:
+            raise ValueError(f"Unexpected response from the LangChain embeddings: {str(ke)}")
+        except Exception as e:
+            raise ValueError(f"Error setting embedding model dimensions: {str(e)}")

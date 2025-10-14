@@ -31,6 +31,7 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
                 langchain_embeddings=self.embedding_cache.embedding_client,
                 model=self.embedding_cache.model_name,
                 cache=self.embedding_cache.cache,
+                dimensions=self.embedding_cache.dims,
             ),
         )
 

@@ -2,8 +2,7 @@ from ai_server.redis.client import RedisClient
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 from ai_server.redis.session_manager import RedisSessionManager
 from ai_server.redis.semantic_cache import ConversationMemoryCache
-from langchain_openai import OpenAIEmbeddings
-from ai_server.ai.providers.openai_provider import OpenAIChatCompletionAPI, OpenAIResponsesAPI
+from ai_server.ai.providers.openai_provider import OpenAIChatCompletionAPI, OpenAIResponsesAPI, OpenAIEmbeddingProvider
 from ai_server.schemas.message import Message, Role
 from ai_server.utils.general import generate_id
 from ai_server.ai.tools.tools import GetWeather, GetHoroscope, GetCompanyName, Tool
@@ -29,35 +28,41 @@ tracer_provider = register(
     project_name = os.getenv("ARIZE_PROJECT_NAME"),
 )
 
+
 OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
 
-embedding_model = "text-embedding-3-small"
-
-embeddings = OpenAIEmbeddings(model=embedding_model)
-
-# Tracer for custom spans in this module
+"""Startup initialization: group one-time embeddings and index checks in a single trace."""
+# Tracer for custom spans in this module (after global provider is set)
 tracer = trace.get_tracer(__name__)
 
-# Create Redis client within the async context
-redis_config = RedisClient(
-    host=os.environ.get("REDIS_HOST"),
-    port=int(os.environ.get("REDIS_PORT", 6379)),
-    username=os.environ.get("REDIS_USERNAME"),
-    password=os.environ.get("REDIS_PASSWORD"),
-)
-sync_redis_client = redis_config.get_sync_client()
-async_redis_client = redis_config.get_async_client()
+with tracer.start_as_current_span(
+    "startup",
+    attributes={
+        "app.component": "dev_test_init",
+    },
+):
 
-embedding_cache = RedisEmbeddingsCache(
-    async_redis_client=async_redis_client,
-    embedding_client=embeddings,
-    model_name=embedding_model,
-)
+    embeddings_provider = OpenAIEmbeddingProvider()
 
-semantic_cache = ConversationMemoryCache(
-    redis_client=sync_redis_client,
-    embedding_cache=embedding_cache,
-)
+    # Create Redis client within the async context
+    redis_config = RedisClient(
+        host=os.environ.get("REDIS_HOST"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
+        username=os.environ.get("REDIS_USERNAME"),
+        password=os.environ.get("REDIS_PASSWORD"),
+    )
+    sync_redis_client = redis_config.get_sync_client()
+    async_redis_client = redis_config.get_async_client()
+        
+    embedding_cache = RedisEmbeddingsCache(
+        async_redis_client=async_redis_client,
+        embedding_provider=embeddings_provider,
+    )
+
+    semantic_cache = ConversationMemoryCache(
+        redis_client=sync_redis_client,
+        embedding_cache=embedding_cache,
+    )
 
 session_id = 'a7beae66086f4116af33af72ffd6b2f8_ee8fbe625269404b95a8802f794c9a47'
 user_id = 'a7beae66086f4116af33af72ffd6b2f8'
@@ -300,14 +305,21 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
             elif messages[-1].role == Role.TOOL:
                 step+=1
 
-if __name__ == "__main__":
+async def interactive_main():
     while True:
-        query = input("You: ")
+        # Read blocking input without leaving the event loop
+        query = await asyncio.get_running_loop().run_in_executor(None, input, "You: ")
         if query == "exit":
             break
-        asyncio.run(generate_answer(query, session_id, user_id))
+        await generate_answer(query, session_id, user_id)
+
+if __name__ == "__main__":
+    asyncio.run(interactive_main())
     # asyncio.run(fill_data())
     
 # Next steps
-# 2. Performance analysis in notebook with multiple queries and redis cloud
-# 4. Telemetry to see timing 
+# 1. Performance analysis in notebook with multiple queries and redis cloud
+# 2. confirm how multiple turns added to redis look like in db and sessions as well
+# 3. Is caching adding too much latency to the system? 
+# 4. There is embedding cache layer at session manager - but is it needed? Since now we are concatenating prompt+response and storing it in redis embedcache but we will never reembed the same combination again
+# 5. Imagine scenario of user typing message and error occurs before ai generates response - will that message be stored in redis?
