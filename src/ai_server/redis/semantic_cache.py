@@ -12,8 +12,10 @@ from redis import Redis
 
 from redisvl.extensions.cache.llm import SemanticCache
 from redisvl.query.filter import Tag
+from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 class ConversationMemoryCache(metaclass=SingletonMeta):
     def __init__(self, redis_client: Redis, embedding_cache: RedisEmbeddingsCache) -> None:
@@ -23,6 +25,7 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
             name="agent_memory_cache",
             redis_client=self.redis_client,
             distance_threshold=0.85,
+            overwrite=True,
             filterable_fields=[
                 {"name": "user_id", "type": "tag"},
                 {"name": "session_id", "type": "tag"},
@@ -37,6 +40,9 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
 
     async def clear_cache(self):
         await self.conv_memory_cache.aclear()
+
+    async def delete_cache(self):
+        await self.conv_memory_cache.adelete()
 
     def cache(self, func: Callable) -> Callable:
         @functools.wraps(func)
@@ -53,10 +59,15 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
                 session_id_filter = Tag("session_id") == session_id
                 user_id_filter = Tag("user_id") == user_id
                 filter_ = session_id_filter & user_id_filter
-                if result := await self.conv_memory_cache.acheck(
-                    prompt=query,
-                    filter_expression=filter_,
+                with tracer.start_as_current_span(
+                    "semantic_cache_check",
+                    attributes={"app.query_len": len(query) if isinstance(query, str) else 0},
                 ):
+                    result = await self.conv_memory_cache.acheck(
+                        prompt=query,
+                        filter_expression=filter_,
+                    )
+                if result:
                     logger.info(f"Semantic cache hit for query: {query}")
                     formatted_query = Message(
                         role=Role.HUMAN,
@@ -92,21 +103,27 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
                     return [formatted_query, formatted_result]
                 else:
                     logger.info(f"Semantic cache miss for query: {query}")
+
             response: List[Message] = await func(*args, **kwargs)
             if response[-1].role == Role.AI and not explicit_skip:
                 # Serialize metadata to JSON string to avoid Redis dictionary error
                 metadata_json = json.dumps(response[-1].metadata) if response[-1].metadata else "{}"
-                
-                await self.conv_memory_cache.astore(
-                    prompt=query,
-                    response=response[-1].content,
-                    filters={
-                        "metadata": metadata_json,  # Store metadata as JSON string
-                        "user_id": user_id,
-                        "session_id": session_id,
-                    }
-                )
+                with tracer.start_as_current_span(
+                    "semantic_cache_store",
+                    attributes={
+                        "app.response_len": len(response[-1].content) if response[-1].content else 0,
+                    },
+                ):
+                    await self.conv_memory_cache.astore(
+                        prompt=query,
+                        response=response[-1].content,
+                        filters={
+                            "metadata": metadata_json,  # Store metadata as JSON string
+                            "user_id": user_id,
+                            "session_id": session_id,
+                        }
+                    )
             return response
         return wrapper
 
-    
+__all__ = ["ConversationMemoryCache"]

@@ -35,14 +35,13 @@ conversation_memory_cache = ConversationMemoryCache(
     embedding_cache=embedding_cache,
 )
 
-
 async def delete_data():
     session_manager = await RedisSessionManager.create(async_redis_client=async_redis_client, embedding_cache=embedding_cache)
     await asyncio.gather(
         session_manager.delete_conv_index_data(),
         session_manager.delete_user_kv(user_id=user_id),
         embedding_cache.clear_cache(),
-        conversation_memory_cache.clear_cache()
+        conversation_memory_cache.delete_cache()
     )
 
 asyncio.run(delete_data())

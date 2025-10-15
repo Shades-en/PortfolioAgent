@@ -12,11 +12,14 @@ from ai_server.schemas.message import FunctionCallRequest
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 
 from ai_server.utils.singleton import SingletonMeta
+from ai_server.utils.general import get_env_int
 
 from typing import List, Self, Optional
 import json
 from datetime import datetime, timezone
 import asyncio
+import logging
+from opentelemetry import trace
 
 from redisvl.index import AsyncSearchIndex
 from redis.asyncio import Redis as AsyncRedis
@@ -25,12 +28,23 @@ from redisvl.query.filter import Tag
 from redisvl.schema.schema import IndexSchema
 from redisvl.redis.utils import array_to_buffer
 
+# Logging and tracing
+logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
+
+# Trace attribute keys
+TRACE_SESSION_ID = "app.session_id"
+TRACE_USER_ID = "app.user_id"
+TRACE_TURN_ID = "app.turn_id"
+
 
 class RedisSessionManager(metaclass=SingletonMeta):
     def __init__(self, async_redis_client: AsyncRedis, embedding_cache: RedisEmbeddingsCache) -> None:
         self.async_redis_client: AsyncRedis = async_redis_client
         self.embedding_cache: RedisEmbeddingsCache = embedding_cache
         self._conv_memory_index: Optional[AsyncSearchIndex] = None
+        # Track background tasks to avoid premature GC and to allow cleanup if needed
+        self._bg_tasks: set[asyncio.Task] = set()
         self._index_schema: dict = {
             "index": {
                 "name": "agent_turns",
@@ -52,8 +66,8 @@ class RedisSessionManager(metaclass=SingletonMeta):
                         "dims": self.embedding_cache.dims,
                         "distance_metric": "cosine",
                         "datatype": "float32",
-                        "m": 24,
-                        "ef_construction": 200,
+                        "m": get_env_int("REDIS_HNSW_M", 24),
+                        "ef_construction": get_env_int("REDIS_HNSW_EF_CONSTRUCTION", 200),
                     },
                 },
             ],
@@ -72,7 +86,6 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 message="Failed to create conversation memory index", 
                 note=str(e)
             )
-
         
     async def create_conv_memory_index(self) -> AsyncSearchIndex:
         try:
@@ -88,6 +101,62 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 message="Failed to create conversation memory index", 
                 note=str(e)
             )
+
+    def _schedule_background_embed_index(
+        self,
+        messages: List[Message],
+        session_id: str,
+        user_id: str,
+        turn_id: str,
+        created_at: str,
+        created_at_epoch: int,
+    ) -> None:
+        """Prepare text and schedule background embedding + index load for a turn.
+
+        Non-blocking. Keeps a reference to the created task to prevent GC.
+        """
+        # Build a turn-level text (HUMAN + AI only) for vector indexing
+        natural_text_parts = [
+            msg.content.strip()
+            for msg in messages
+            if msg.content and msg.content.strip() and msg.role in (Role.HUMAN, Role.AI)
+        ]
+
+        if not natural_text_parts:
+            return
+
+        turn_text_full = "\n".join(natural_text_parts)
+        turn_text = self._truncate_text(turn_text_full, max_chars=4000)
+
+        async def _bg_embed_and_index():
+            try:
+                with tracer.start_as_current_span(
+                    "embed_index_background",
+                    attributes={
+                        TRACE_SESSION_ID: session_id,
+                        TRACE_USER_ID: user_id,
+                        TRACE_TURN_ID: turn_id,
+                        "app.text_len": len(turn_text),
+                    },
+                ):
+                    embedding = (await self.embedding_cache.embed_documents([turn_text], skip_cache=True))[0]
+                    turn_doc = {
+                        "text": turn_text,
+                        "created_at": created_at,
+                        "created_at_epoch": created_at_epoch,
+                        "user_id": user_id,
+                        "turn_id": turn_id,
+                        "session_id": session_id,
+                        "embedding": array_to_buffer(embedding, dtype="float32"),
+                    }
+                    await self._conv_memory_index.load([turn_doc])
+            except Exception:
+                logger.exception("Background embed/index failed for turn %s", turn_id)
+
+        # Fire-and-forget background task, keep a reference to avoid GC
+        task = asyncio.create_task(_bg_embed_and_index())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
     
     async def add_message(self, messages: List[Message]) -> None:
         try:
@@ -127,36 +196,41 @@ class RedisSessionManager(metaclass=SingletonMeta):
             # Persist KV and update ZSET/SESSION SET in parallel (namespaced by user and session)
             zset_key = f"user:{user_id}:session:{session_id}:turns"
 
-            # Build a turn-level text (HUMAN + AI only) for vector indexing
-            natural_text_parts = [
-                msg.content.strip()
-                for msg in messages
-                if msg.content and msg.content.strip() and msg.role in (Role.HUMAN, Role.AI)
-            ]
+            async def _span_await(name: str, coro):
+                with tracer.start_as_current_span(
+                    name,
+                    attributes={
+                        TRACE_SESSION_ID: session_id,
+                        TRACE_USER_ID: user_id,
+                        TRACE_TURN_ID: turn_id,
+                    },
+                ):
+                    return await coro
 
-            if not natural_text_parts:
-                # Nothing meaningful to index for this turn; KV still stored
-                return
+            with tracer.start_as_current_span(
+                "add_message",
+                attributes={
+                    TRACE_SESSION_ID: session_id,
+                    TRACE_USER_ID: user_id,
+                    TRACE_TURN_ID: turn_id,
+                },
+            ):
+                # Write KV/ZSET/SADD now for immediate UI visibility
+                await asyncio.gather(
+                    _span_await("kv_set", self.async_redis_client.set(kv_key, json.dumps(kv_payload))),
+                    _span_await("zadd", self.async_redis_client.zadd(zset_key, {turn_id: created_at_epoch})),
+                    _span_await("sadd", self.async_redis_client.sadd(f"user:{user_id}:sessions", session_id)),
+                )
 
-            turn_text = "\n".join(natural_text_parts)
-            embedding = (await self.embedding_cache.embed_documents([turn_text]))[0]
-
-            turn_doc = {
-                "text": turn_text,
-                "created_at": created_at,
-                "created_at_epoch": created_at_epoch,
-                "user_id": user_id,
-                "turn_id": turn_id,
-                "session_id": session_id,
-                "embedding": array_to_buffer(embedding, dtype="float32"),
-            }
-
-            await asyncio.gather(
-                self.async_redis_client.set(kv_key, json.dumps(kv_payload)),
-                self.async_redis_client.zadd(zset_key, {turn_id: created_at_epoch}),
-                self.async_redis_client.sadd(f"user:{user_id}:sessions", session_id),
-                self._conv_memory_index.load([turn_doc])
-            )
+                # Schedule background embed + index load for this turn
+                self._schedule_background_embed_index(
+                    messages=messages,
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    created_at=created_at,
+                    created_at_epoch=created_at_epoch,
+                )
 
         except Exception as e:
             raise RedisMessageStoreFailedException(
@@ -177,19 +251,18 @@ class RedisSessionManager(metaclass=SingletonMeta):
             ).sort_by("created_at_epoch", asc=True)
             results = await self._conv_memory_index.query(filter_query)
 
-            # Fetch full turn messages from KV and concatenate
+            # Fetch full turn messages from KV using MGET and concatenate
             all_messages: List[Message] = []
-            for doc in results:
-                tid = doc.get("turn_id")
-                if not tid:
-                    continue
-                turn_key = f"turn:{tid}"
-                raw = await self.async_redis_client.get(turn_key)
-                if not raw:
-                    continue
-                payload = json.loads(raw)
-                turn_msgs = self._parse_messages(payload.get("messages", []))
-                all_messages.extend(turn_msgs)
+            turn_ids = [doc.get("turn_id") for doc in results if doc.get("turn_id")]
+            if turn_ids:
+                kv_keys = [f"turn:{tid}" for tid in turn_ids]
+                raws = await self.async_redis_client.mget(kv_keys)
+                for raw in raws:
+                    if not raw:
+                        continue
+                    payload = json.loads(raw)
+                    turn_msgs = self._parse_messages(payload.get("messages", []))
+                    all_messages.extend(turn_msgs)
             return all_messages
         except Exception as e:
             raise RedisRetrievalFailedException(
@@ -245,21 +318,137 @@ class RedisSessionManager(metaclass=SingletonMeta):
                     raw_ids = await self.async_redis_client.zrange(zset_key, start_idx, end_idx)
                 turn_ids = [tid.decode("utf-8") if isinstance(tid, (bytes, bytearray)) else tid for tid in raw_ids]
 
-            # Fetch turns from KV
+            # Fetch turns from KV (batch via MGET for speed)
             messages: List[Message] = []
-            for tid in turn_ids:
-                raw = await self.async_redis_client.get(f"turn:{tid}")
-                if not raw:
-                    continue
-                payload = json.loads(raw)
-                msgs = self._parse_messages(payload.get("messages", []))
-                messages.extend(msgs)
+            if turn_ids:
+                kv_keys = [f"turn:{tid}" for tid in turn_ids]
+                raws = await self.async_redis_client.mget(kv_keys)
+                for raw in raws:
+                    if not raw:
+                        continue
+                    payload = json.loads(raw)
+                    msgs = self._parse_messages(payload.get("messages", []))
+                    messages.extend(msgs)
 
             return messages
         except Exception as e:
             raise RedisRetrievalFailedException(
                 message="Failed to get paged messages from session timeline",
                 note=str(e),
+            )
+
+    async def get_relevant_messages_by_session_id(
+        self, 
+        session_id: str, 
+        user_id: str, 
+        query: str, 
+        top_n_turns: int = 3, 
+        vector_top_k: int = 50
+    ) -> List[Message]:
+        try:
+            with tracer.start_as_current_span(
+                "get_relevant_messages_by_session_id",
+                attributes={
+                    TRACE_SESSION_ID: session_id,
+                    TRACE_USER_ID: user_id,
+                    "app.vector_top_k": vector_top_k,
+                    "app.top_n_turns": top_n_turns,
+                },
+            ):
+                session_id_filter = Tag("session_id") == session_id
+                user_id_filter = Tag("user_id") == user_id
+                filter_ = session_id_filter & user_id_filter
+
+                query_embedding = await self.embedding_cache.embed_query(query)
+                ef_runtime = get_env_int("REDIS_HNSW_EF_RUNTIME")
+
+                with tracer.start_as_current_span(
+                    "vector_search",
+                    attributes={
+                        TRACE_SESSION_ID: session_id,
+                        TRACE_USER_ID: user_id,
+                        "app.ef_runtime": ef_runtime if ef_runtime is not None else 0,
+                        "app.num_results": max(vector_top_k, top_n_turns),
+                    },
+                ):
+                    vector_query = VectorQuery(
+                        vector=query_embedding,
+                        filter_expression=filter_,
+                        return_fields=["turn_id"],
+                        vector_field_name="embedding",
+                        num_results=max(vector_top_k, top_n_turns),
+                        ef_runtime=ef_runtime,
+                    ).sort_by("vector_distance", asc=True)
+                    results = await self._conv_memory_index.query(vector_query)
+                
+                # Collect top n distinct turn_ids
+                seen_turn_ids = set()
+                top_n_turn_ids = []
+                for result_dict in results:
+                    turn_id = result_dict.get('turn_id')
+                    if turn_id and turn_id not in seen_turn_ids:
+                        seen_turn_ids.add(turn_id)
+                        top_n_turn_ids.append(turn_id)
+                        if len(top_n_turn_ids) == top_n_turns:
+                            break
+
+                if not top_n_turn_ids:
+                    return []
+
+                # Fetch full turn messages from KV for the selected turns (MGET)
+                with tracer.start_as_current_span(
+                    "kv_mget_fetch",
+                    attributes={TRACE_SESSION_ID: session_id, TRACE_USER_ID: user_id, "app.turn_count": len(top_n_turn_ids)},
+                ):
+                    relevant_messages: List[Message] = []
+                    kv_keys = [f"turn:{tid}" for tid in top_n_turn_ids]
+                    raws = await self.async_redis_client.mget(kv_keys)
+                    for raw in raws:
+                        if not raw:
+                            continue
+                        payload = json.loads(raw)
+                        msgs = self._parse_messages(payload.get("messages", []))
+                        relevant_messages.extend(msgs)
+
+                return relevant_messages
+        except Exception as e:
+            raise RedisRetrievalFailedException(
+                message="Failed to get relevant messages from conversation memory", 
+                note=str(e)
+            )
+
+    def _parse_messages(self, messages_dict: List[dict]) -> List[Message]:
+        try:
+            messages = []
+            for message in messages_dict:
+                function_field = message.get("function_call")
+                function_call = None
+                if function_field:
+                    try:
+                        # function_call might be a JSON string or already a dict
+                        function = json.loads(function_field) if isinstance(function_field, str) else function_field
+                        if function.get("name"):
+                            function_call = FunctionCallRequest(
+                                name=function.get("name", None),
+                                arguments=function.get("arguments", None),
+                            )
+                    except Exception:
+                        function_call = None
+                messages.append(Message(
+                    role=Role(message["role"]),
+                    tool_call_id=message.get("tool_call_id", "null"),
+                    user_id=message["user_id"],
+                    session_id=message["session_id"],
+                    turn_id=message["turn_id"],
+                    metadata=message.get("metadata", {}),
+                    content=message.get("content"),
+                    function_call=function_call,
+                ))
+            return messages
+        except Exception as e:
+            raise MessageParseException(
+                message="Failed to parse message from conversation memory", 
+                note=str(e)
             )
 
     async def _delete_session_kv(self, session_id: str, user_id: str, batch_size: int = 1000) -> int:
@@ -317,91 +506,6 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 note=str(e),
             )
 
-    async def get_relevant_messages_by_session_id(self, session_id: str, user_id: str, query: str, top_n_turns: int = 3, vector_top_k: int = 50) -> List[Message]:
-        try:
-            session_id_filter = Tag("session_id") == session_id
-            user_id_filter = Tag("user_id") == user_id
-            filter_ = session_id_filter & user_id_filter
-
-            query_embedding = await self.embedding_cache.embed_query(query)
-            
-            vector_query = VectorQuery(
-                vector=query_embedding,
-                filter_expression=filter_,
-                return_fields=["turn_id"],
-                vector_field_name="embedding",
-                num_results=max(vector_top_k, top_n_turns)
-            ).sort_by("vector_distance", asc=True)
-            
-            results = await self._conv_memory_index.query(vector_query)
-            
-            # Collect top n distinct turn_ids
-            seen_turn_ids = set()
-            top_n_turn_ids = []
-            
-            for result_dict in results:
-                turn_id = result_dict.get('turn_id')
-                if turn_id and turn_id not in seen_turn_ids:
-                    seen_turn_ids.add(turn_id)
-                    top_n_turn_ids.append(turn_id)
-                    if len(top_n_turn_ids) == top_n_turns:
-                        break
-
-            if not top_n_turn_ids:
-                return []
-
-            # Fetch full turn messages from KV for the selected turns
-            relevant_messages: List[Message] = []
-            for tid in top_n_turn_ids:
-                raw = await self.async_redis_client.get(f"turn:{tid}")
-                if not raw:
-                    continue
-                payload = json.loads(raw)
-                msgs = self._parse_messages(payload.get("messages", []))
-                relevant_messages.extend(msgs)
-
-
-            return relevant_messages
-        except Exception as e:
-            raise RedisRetrievalFailedException(
-                message="Failed to get relevant messages from conversation memory", 
-                note=str(e)
-            )
-
-    def _parse_messages(self, messages_dict: List[dict]) -> List[Message]:
-        try:
-            messages = []
-            for message in messages_dict:
-                function_field = message.get("function_call")
-                function_call = None
-                if function_field:
-                    try:
-                        # function_call might be a JSON string or already a dict
-                        function = json.loads(function_field) if isinstance(function_field, str) else function_field
-                        if function.get("name"):
-                            function_call = FunctionCallRequest(
-                                name=function.get("name", None),
-                                arguments=function.get("arguments", None),
-                            )
-                    except Exception:
-                        function_call = None
-                messages.append(Message(
-                    role=Role(message["role"]),
-                    tool_call_id=message.get("tool_call_id", "null"),
-                    user_id=message["user_id"],
-                    session_id=message["session_id"],
-                    turn_id=message["turn_id"],
-                    metadata=message.get("metadata", {}),
-                    content=message.get("content"),
-                    function_call=function_call,
-                ))
-            return messages
-        except Exception as e:
-            raise MessageParseException(
-                message="Failed to parse message from conversation memory", 
-                note=str(e)
-            )
-
     async def delete_conv_index_data(self):
         try:
             await self._conv_memory_index.delete(drop=True)
@@ -410,6 +514,13 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 message="Failed to drop conversation memory index", 
                 note=str(e)
             )
+
+    def _truncate_text(self, text: str, max_chars: int = 4000) -> str:
+        """Truncate text to a maximum number of characters, preserving head and tail for context."""
+        if len(text) <= max_chars:
+            return text
+        half = max_chars // 2
+        return text[:half] + "\n...\n" + text[-half:]
 
     def _to_epoch_ms(self, ts: str) -> int:
         """Convert ISO-like timestamp string to epoch milliseconds.

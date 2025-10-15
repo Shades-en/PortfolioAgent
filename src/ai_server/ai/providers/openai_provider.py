@@ -23,6 +23,11 @@ import os
 from typing import List, Dict
 from abc import ABC, abstractmethod
 
+from ai_server.utils.general import get_env_int
+import logging
+
+logger = logging.getLogger(__name__)
+
 class OpenAIProvider(LLMProvider, ABC):
     def __init__(self, temperature: float = 0.7) -> None:
         super().__init__(OPENAI)
@@ -386,11 +391,28 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
-    def __init__(self, model_name: str = "text-embedding-3-small") -> None:
+    def __init__(
+        self, 
+        model_name: str = "text-embedding-3-small", 
+        dimensions: int | None = None
+    ) -> None:
         self.model_name = model_name
-        self.client = OpenAIEmbeddings(model=model_name)
-        self.dimensions = self._set_dimension()
-        super().__init__(OPENAI, self.client, self.model_name, self.dimensions)
+        env_dims = dimensions or get_env_int("OPENAI_EMBEDDING_DIMENSIONS")
+        self.client = OpenAIEmbeddings(model=model_name, dimensions=env_dims)
+        self.dimensions = env_dims or self._set_dimension()
+        dim_source = "env" if env_dims is not None else "probe"
+        logger.info(
+            "OpenAIEmbeddingProvider initialized: model=%s dims=%s source=%s",
+            self.model_name,
+            self.dimensions,
+            dim_source,
+        )
+        super().__init__(
+            provider=OPENAI, 
+            client=self.client, 
+            model_name=self.model_name, 
+            dimensions=self.dimensions
+        )
     
     def _set_dimension(self) -> int:
         try:

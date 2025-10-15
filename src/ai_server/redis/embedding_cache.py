@@ -6,9 +6,7 @@ import logging
 from ai_server.ai.providers.embedding_provider import EmbeddingProvider
 from ai_server.utils.singleton import SingletonMeta
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 class RedisEmbeddingsCache(metaclass=SingletonMeta):
     def __init__(self, async_redis_client: AsyncRedis, embedding_provider: EmbeddingProvider) -> None:
