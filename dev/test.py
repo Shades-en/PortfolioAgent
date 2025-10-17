@@ -1,3 +1,4 @@
+from openinference.semconv.trace import OpenInferenceSpanKindValues
 from ai_server.redis.client import RedisClient
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 from ai_server.redis.session_manager import RedisSessionManager
@@ -15,6 +16,8 @@ from arize.otel import register
 from openinference.instrumentation.openai import OpenAIInstrumentor
 from opentelemetry import trace
 from ai_server.utils.logger import setup_logging
+from ai_server.utils.tracing import spanner, async_spanner
+from ai_server.constants import DATABASE, INIT
 
 load_dotenv()
 
@@ -32,13 +35,15 @@ OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
 # Tracer for custom spans in this module (after global provider is set)
 tracer = trace.get_tracer(__name__)
 
-with tracer.start_as_current_span(
-    "startup",
-    attributes={
-        "app.component": "dev_test_init",
+with spanner(
+    tracer=tracer,
+    name="startup",
+    kind=INIT,
+    metadata={
+        "redis.host": os.environ.get("REDIS_HOST"),
+        "redis.port": os.environ.get("REDIS_PORT"),
     },
 ):
-
     embeddings_provider = OpenAIEmbeddingProvider()
 
     # Create Redis client within the async context
@@ -90,14 +95,14 @@ async def generate_response(
         turn_id: str,
         tools: List[Tool] = [],
     ):
-    with tracer.start_as_current_span(
-        "generate_response",
-        attributes={
-            "app.session_id": session_id,
-            "app.user_id": user_id,
-            "app.turn_id": turn_id,
-            "app.query": query or "",
-        },
+    async with async_spanner(
+        tracer=tracer,
+        name="GenerateResponse",
+        kind=OpenInferenceSpanKindValues.CHAIN,
+        session_id=session_id,
+        user_id=user_id,
+        turn_id=turn_id,
+        input=query,
     ):
         if conversation_history[-1].role != Role.TOOL:
             semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query)
@@ -109,13 +114,16 @@ async def generate_response(
         # if previous message is tool call we pass it to LLM for summarisation without user query
         # as query associated with it is already stored in conversation history
         pure_user_query = query and conversation_history[-1].role != Role.TOOL
-        with tracer.start_as_current_span(
-            "llm_generate_response",
-            attributes={
-                "app.session_id": session_id,
-                "app.user_id": user_id,
-                "app.turn_id": turn_id,
-                "app.pure_user_query": bool(pure_user_query),
+        async with async_spanner(
+            tracer=tracer,
+            name="LLMGenerateResponse",
+            kind=OpenInferenceSpanKindValues.CHAIN,
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=turn_id,
+            input=query,
+            metadata={
+                "pure_user_query": bool(pure_user_query),
             },
         ):
             messages = await openai_client.generate_response(
@@ -211,14 +219,15 @@ async def fill_data():
 
 
 
-async def generate_answer(query: str, session_id: str, user_id: str) -> str:
-    with tracer.start_as_current_span(
-        "generate_answer",
-        attributes={
-            "app.session_id": session_id,
-            "app.user_id": user_id,
-            "app.input.query": query or "",
-        },
+async def generate_answer(query: str, session_id: str, user_id: str, turn_id: str):
+    async with async_spanner(
+        tracer=tracer,
+        name="GenerateAnswer",
+        kind=OpenInferenceSpanKindValues.CHAIN,
+        session_id=session_id,
+        user_id=user_id,
+        turn_id=turn_id,
+        input=query,
     ):
         redis_session_manager = await RedisSessionManager.create(
             async_redis_client=async_redis_client,
@@ -228,7 +237,6 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
         step = 1
         max_step = 3
         conversation_history: List[Message] = [system_message]
-        turn_id = f"{session_id}_{generate_id(8)}"
         
         while True:
             if step > max_step:
@@ -245,13 +253,18 @@ async def generate_answer(query: str, session_id: str, user_id: str) -> str:
             )
             
             # Add messages to long-term store under its own span
-            with tracer.start_as_current_span(
-                "redis_add_message",
-                attributes={
-                    "app.session_id": session_id,
-                    "app.user_id": user_id,
-                    "app.turn_id": turn_id,
-                    "app.message_count": len(messages),
+            async with async_spanner(
+                tracer=tracer,
+                name="RedisAddMessage",
+                kind=DATABASE,
+                session_id=session_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                input=messages,
+                metadata={
+                    "step": step,
+                    "max_step": max_step,
+                    "query": query,
                 },
             ):
                 await redis_session_manager.add_message(messages)
@@ -280,11 +293,12 @@ async def interactive_main():
         query = await asyncio.get_running_loop().run_in_executor(None, input, "You: ")
         if query == "exit":
             break
-        await generate_answer(query, session_id, user_id)
+        turn_id = f"{session_id}_{generate_id(8)}"
+        await generate_answer(query, session_id, user_id, turn_id)
 
 if __name__ == "__main__":
     asyncio.run(interactive_main())
     # asyncio.run(fill_data())
     
 # Next steps
-# 4. Refine tracing attributes and other stuff
+# 4. Add tracing in embeddings and vectorizers and all

@@ -5,6 +5,7 @@ from ai_server.api.exceptions.redis_exceptions import RedisIndexFailedException,
     RedisIndexDropFailedException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
+from ai_server.constants import DATABASE, VECTOR_INDEX
 from ai_server.schemas.message import Message
 from ai_server.schemas.message import Role
 from ai_server.schemas.message import FunctionCallRequest
@@ -13,6 +14,7 @@ from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 
 from ai_server.utils.singleton import SingletonMeta
 from ai_server.utils.general import get_env_int
+from ai_server.utils.tracing import async_spanner
 
 from typing import List, Self, Optional
 import json
@@ -20,6 +22,7 @@ from datetime import datetime, timezone
 import asyncio
 import logging
 from opentelemetry import trace
+import re
 
 from redisvl.index import AsyncSearchIndex
 from redis.asyncio import Redis as AsyncRedis
@@ -110,6 +113,7 @@ class RedisSessionManager(metaclass=SingletonMeta):
         turn_id: str,
         created_at: str,
         created_at_epoch: int,
+        max_chars: int = 4000,
     ) -> None:
         """Prepare text and schedule background embedding + index load for a turn.
 
@@ -126,20 +130,24 @@ class RedisSessionManager(metaclass=SingletonMeta):
             return
 
         turn_text_full = "\n".join(natural_text_parts)
-        turn_text = self._truncate_text(turn_text_full, max_chars=4000)
+        turn_text = self._truncate_text(turn_text_full, max_chars=max_chars)
 
-        async def _bg_embed_and_index():
+        async def _bg_embed_and_index(skip_cache: bool = False):
             try:
-                with tracer.start_as_current_span(
-                    "embed_index_background",
-                    attributes={
-                        TRACE_SESSION_ID: session_id,
-                        TRACE_USER_ID: user_id,
-                        TRACE_TURN_ID: turn_id,
-                        "app.text_len": len(turn_text),
-                    },
+                async with async_spanner(
+                    tracer=tracer,
+                    name="BackgroundEmbedIndex",
+                    kind=VECTOR_INDEX,
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    input=turn_text,
+                    metadata={
+                        "skip_cache": skip_cache,
+                        "max_chars": max_chars,
+                    }
                 ):
-                    embedding = (await self.embedding_cache.embed_documents([turn_text], skip_cache=True))[0]
+                    embedding = (await self.embedding_cache.embed_documents([turn_text], skip_cache=skip_cache))[0]
                     turn_doc = {
                         "text": turn_text,
                         "created_at": created_at,
@@ -154,7 +162,7 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 logger.exception("Background embed/index failed for turn %s", turn_id)
 
         # Fire-and-forget background task, keep a reference to avoid GC
-        task = asyncio.create_task(_bg_embed_and_index())
+        task = asyncio.create_task(_bg_embed_and_index(skip_cache=True))
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
     
@@ -197,23 +205,32 @@ class RedisSessionManager(metaclass=SingletonMeta):
             zset_key = f"user:{user_id}:session:{session_id}:turns"
 
             async def _span_await(name: str, coro):
-                with tracer.start_as_current_span(
-                    name,
-                    attributes={
-                        TRACE_SESSION_ID: session_id,
-                        TRACE_USER_ID: user_id,
-                        TRACE_TURN_ID: turn_id,
-                    },
+                # Convert provided span name to PascalCase for consistency
+                span_name = ''.join(part.capitalize() for part in re.split(r'[^0-9a-zA-Z]+', name) if part)
+                async with async_spanner(
+                    tracer=tracer,
+                    name=span_name,
+                    kind=DATABASE,
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
                 ):
                     return await coro
 
-            with tracer.start_as_current_span(
-                "add_message",
-                attributes={
-                    TRACE_SESSION_ID: session_id,
-                    TRACE_USER_ID: user_id,
-                    TRACE_TURN_ID: turn_id,
-                },
+            async with async_spanner(
+                tracer=tracer,
+                name="AddMessage",
+                kind=DATABASE,
+                session_id=session_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                input=kv_payload,
+                metadata={
+                    "kv_key": kv_key,
+                    "zset_key": zset_key,
+                    "created_at": created_at,
+                    "created_at_epoch": created_at_epoch,
+                }
             ):
                 # Write KV/ZSET/SADD now for immediate UI visibility
                 await asyncio.gather(
@@ -346,14 +363,17 @@ class RedisSessionManager(metaclass=SingletonMeta):
         vector_top_k: int = 50
     ) -> List[Message]:
         try:
-            with tracer.start_as_current_span(
-                "get_relevant_messages_by_session_id",
-                attributes={
-                    TRACE_SESSION_ID: session_id,
-                    TRACE_USER_ID: user_id,
-                    "app.vector_top_k": vector_top_k,
-                    "app.top_n_turns": top_n_turns,
-                },
+            async with async_spanner(
+                tracer=tracer,
+                name="GetRelevantMessagesBySessionId",
+                kind=DATABASE,
+                session_id=session_id,
+                user_id=user_id,
+                input=query,
+                metadata={
+                    "top_n_turns": top_n_turns,
+                    "vector_top_k": vector_top_k,
+                }
             ):
                 session_id_filter = Tag("session_id") == session_id
                 user_id_filter = Tag("user_id") == user_id
@@ -362,13 +382,17 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 query_embedding = await self.embedding_cache.embed_query(query)
                 ef_runtime = get_env_int("REDIS_HNSW_EF_RUNTIME")
 
-                with tracer.start_as_current_span(
-                    "vector_search",
-                    attributes={
-                        TRACE_SESSION_ID: session_id,
-                        TRACE_USER_ID: user_id,
-                        "app.ef_runtime": ef_runtime if ef_runtime is not None else 0,
-                        "app.num_results": max(vector_top_k, top_n_turns),
+                async with async_spanner(
+                    tracer=tracer,
+                    name="VectorSearch",
+                    kind=VECTOR_INDEX,
+                    session_id=session_id,
+                    user_id=user_id,
+                    input=query,
+                    metadata={
+                        "ef_runtime": ef_runtime,
+                        "num_results": max(vector_top_k, top_n_turns),
+                        "filter": str(filter_),
                     },
                 ):
                     vector_query = VectorQuery(
@@ -396,12 +420,20 @@ class RedisSessionManager(metaclass=SingletonMeta):
                     return []
 
                 # Fetch full turn messages from KV for the selected turns (MGET)
-                with tracer.start_as_current_span(
-                    "kv_mget_fetch",
-                    attributes={TRACE_SESSION_ID: session_id, TRACE_USER_ID: user_id, "app.turn_count": len(top_n_turn_ids)},
+                relevant_messages: List[Message] = []
+                kv_keys = [f"turn:{tid}" for tid in top_n_turn_ids]
+                async with async_spanner(
+                    tracer=tracer,
+                    name="KvMgetFetch",
+                    kind=DATABASE,
+                    session_id=session_id,
+                    user_id=user_id,
+                    input=query,
+                    metadata={
+                        "turn_count": len(top_n_turn_ids),
+                        "kv_keys": kv_keys,
+                    },
                 ):
-                    relevant_messages: List[Message] = []
-                    kv_keys = [f"turn:{tid}" for tid in top_n_turn_ids]
                     raws = await self.async_redis_client.mget(kv_keys)
                     for raw in raws:
                         if not raw:

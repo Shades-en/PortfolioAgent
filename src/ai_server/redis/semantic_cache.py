@@ -1,18 +1,20 @@
+from ai_server.constants import CACHE
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 from ai_server.schemas.message import Message, Role
 from ai_server.redis.langchain_vectorizer import LangchainTextVectorizer
 from ai_server.utils.singleton import SingletonMeta
+from ai_server.utils.tracing import async_spanner
 
 from typing import List, Callable
 import functools
 import json
 import logging
 
-from redis import Redis
+from opentelemetry import trace
 
+from redis import Redis
 from redisvl.extensions.cache.llm import SemanticCache
 from redisvl.query.filter import Tag
-from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -59,9 +61,17 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
                 session_id_filter = Tag("session_id") == session_id
                 user_id_filter = Tag("user_id") == user_id
                 filter_ = session_id_filter & user_id_filter
-                with tracer.start_as_current_span(
-                    "semantic_cache_check",
-                    attributes={"app.query_len": len(query) if isinstance(query, str) else 0},
+                async with async_spanner(
+                    tracer=tracer,
+                    name="SemanticCacheCheck",
+                    kind=CACHE,
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    input=query,
+                    metadata={
+                        "filter": str(filter_),
+                    }
                 ):
                     result = await self.conv_memory_cache.acheck(
                         prompt=query,
@@ -108,11 +118,19 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
             if response[-1].role == Role.AI and not explicit_skip:
                 # Serialize metadata to JSON string to avoid Redis dictionary error
                 metadata_json = json.dumps(response[-1].metadata) if response[-1].metadata else "{}"
-                with tracer.start_as_current_span(
-                    "semantic_cache_store",
-                    attributes={
-                        "app.response_len": len(response[-1].content) if response[-1].content else 0,
-                    },
+                async with async_spanner(
+                    tracer=tracer,
+                    name="SemanticCacheStore",
+                    kind=CACHE,
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    input=query,
+                    metadata={
+                        "metadata_ai": metadata_json,
+                        "response_ai": response[-1].content,
+                        "response_len": len(response[-1].content) if response[-1].content else 0,
+                    }
                 ):
                     await self.conv_memory_cache.astore(
                         prompt=query,
