@@ -7,6 +7,11 @@ allowing any LangChain embedding provider to be used with Redis vector operation
 from typing import TYPE_CHECKING, List, Optional
 from pydantic import PrivateAttr
 
+from ai_server.utils.tracing import spanner, async_spanner
+
+from opentelemetry import trace
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+
 if TYPE_CHECKING:
     from redisvl.extensions.cache.embeddings.embeddings import EmbeddingsCache
     from langchain_core.embeddings import Embeddings
@@ -16,6 +21,8 @@ from redisvl.utils.vectorize import BaseVectorizer
 # Constants for error messages
 _STR_INPUT_ERROR: str = "Must pass in a str value to embed."
 _LIST_STR_INPUT_ERROR: str = "Must pass in a list of str values to embed."
+
+tracer = trace.get_tracer(__name__)
 
 
 class LangchainTextVectorizer(BaseVectorizer):
@@ -157,8 +164,17 @@ class LangchainTextVectorizer(BaseVectorizer):
             raise TypeError(_STR_INPUT_ERROR)
         
         try:
-            # Use LangChain's embed_query method for single text embedding
-            embedding = self._langchain_embeddings.embed_query(text)
+            with spanner(
+                tracer=tracer,
+                name="VectorizerEmbedQuery",
+                kind=OpenInferenceSpanKindValues.EMBEDDING,
+                metadata={
+                    "text_length": len(text),
+                    "model": self.model,
+                },
+            ):
+                # Use LangChain's embed_query method for single text embedding
+                embedding = self._langchain_embeddings.embed_query(text)
             return embedding
         except Exception as e:
             raise ValueError(f"Embedding text failed: {e}")
@@ -186,10 +202,20 @@ class LangchainTextVectorizer(BaseVectorizer):
             raise TypeError(_LIST_STR_INPUT_ERROR)
         
         try:
-            # Use LangChain's embed_documents method for batch embedding
-            # Note: LangChain handles batching internally, so we pass all texts at once
-            # The batch_size parameter is maintained for interface compatibility
-            embeddings = self._langchain_embeddings.embed_documents(texts)
+            with spanner(
+                tracer=tracer,
+                name="VectorizerEmbedDocuments",
+                kind=OpenInferenceSpanKindValues.EMBEDDING,
+                metadata={
+                    "text_count": len(texts),
+                    "batch_size": batch_size,
+                    "model": self.model,
+                },
+            ):
+                # Use LangChain's embed_documents method for batch embedding
+                # Note: LangChain handles batching internally, so we pass all texts at once
+                # The batch_size parameter is maintained for interface compatibility
+                embeddings = self._langchain_embeddings.embed_documents(texts)
             return embeddings
         except Exception as e:
             raise ValueError(f"Embedding texts failed: {e}")
@@ -212,13 +238,23 @@ class LangchainTextVectorizer(BaseVectorizer):
             raise TypeError(_STR_INPUT_ERROR)
         
         try:
-            # Check if LangChain embeddings supports async operations
-            if hasattr(self._langchain_embeddings, 'aembed_query'):
-                embedding = await self._langchain_embeddings.aembed_query(text)
-                return embedding
-            else:
-                # Fall back to sync method
-                return self._embed(text, **kwargs)
+            async with async_spanner(
+                tracer=tracer,
+                name="VectorizerAsyncEmbedQuery",
+                kind=OpenInferenceSpanKindValues.EMBEDDING,
+                metadata={
+                    "text_length": len(text),
+                    "model": self.model,
+                    "has_async": hasattr(self._langchain_embeddings, 'aembed_query'),
+                },
+            ):
+                # Check if LangChain embeddings supports async operations
+                if hasattr(self._langchain_embeddings, 'aembed_query'):
+                    embedding = await self._langchain_embeddings.aembed_query(text)
+                    return embedding
+                else:
+                    # Fall back to sync method
+                    return self._embed(text, **kwargs)
         except Exception as e:
             raise ValueError(f"Async embedding text failed: {e}")
     
@@ -245,13 +281,24 @@ class LangchainTextVectorizer(BaseVectorizer):
             raise TypeError(_LIST_STR_INPUT_ERROR)
         
         try:
-            # Check if LangChain embeddings supports async operations
-            if hasattr(self._langchain_embeddings, 'aembed_documents'):
-                embeddings = await self._langchain_embeddings.aembed_documents(texts)
-                return embeddings
-            else:
-                # Fall back to sync method
-                return self._embed_many(texts, batch_size, **kwargs)
+            async with async_spanner(
+                tracer=tracer,
+                name="VectorizerAsyncEmbedDocuments",
+                kind=OpenInferenceSpanKindValues.EMBEDDING,
+                metadata={
+                    "text_count": len(texts),
+                    "batch_size": batch_size,
+                    "model": self.model,
+                    "has_async": hasattr(self._langchain_embeddings, 'aembed_documents'),
+                },
+            ):
+                # Check if LangChain embeddings supports async operations
+                if hasattr(self._langchain_embeddings, 'aembed_documents'):
+                    embeddings = await self._langchain_embeddings.aembed_documents(texts)
+                    return embeddings
+                else:
+                    # Fall back to sync method
+                    return self._embed_many(texts, batch_size, **kwargs)
         except Exception as e:
             raise ValueError(f"Async embedding texts failed: {e}")
     

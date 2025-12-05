@@ -157,12 +157,25 @@ class RedisSessionManager(metaclass=SingletonMeta):
                         "session_id": session_id,
                         "embedding": array_to_buffer(embedding, dtype="float32"),
                     }
-                    await self._conv_memory_index.load([turn_doc])
+                    async with async_spanner(
+                        tracer=tracer,
+                        name="VectorIndexLoad",
+                        kind=VECTOR_INDEX,
+                        session_id=session_id,
+                        user_id=user_id,
+                        turn_id=turn_id,
+                        input=turn_text,
+                        metadata={
+                            "document_count": 1,
+                        },
+                    ):
+                        await self._conv_memory_index.load([turn_doc])
             except Exception:
                 logger.exception("Background embed/index failed for turn %s", turn_id)
 
         # Fire-and-forget background task, keep a reference to avoid GC
-        task = asyncio.create_task(_bg_embed_and_index(skip_cache=True))
+        # We skip cache when storing embeddings here as we are sure that ai messages will always be different, hence no point of caching them
+        task = asyncio.create_task(_bg_embed_and_index(skip_cache=True)) 
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
     
@@ -224,7 +237,7 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 session_id=session_id,
                 user_id=user_id,
                 turn_id=turn_id,
-                input=kv_payload,
+                input=json.dumps(kv_payload),
                 metadata={
                     "kv_key": kv_key,
                     "zset_key": zset_key,
@@ -234,9 +247,9 @@ class RedisSessionManager(metaclass=SingletonMeta):
             ):
                 # Write KV/ZSET/SADD now for immediate UI visibility
                 await asyncio.gather(
-                    _span_await("kv_set", self.async_redis_client.set(kv_key, json.dumps(kv_payload))),
-                    _span_await("zadd", self.async_redis_client.zadd(zset_key, {turn_id: created_at_epoch})),
-                    _span_await("sadd", self.async_redis_client.sadd(f"user:{user_id}:sessions", session_id)),
+                    _span_await("kv_set", self.async_redis_client.set(kv_key, json.dumps(kv_payload))), # Stores turn along with all relevent data of that turn
+                    _span_await("zadd", self.async_redis_client.zadd(zset_key, {turn_id: created_at_epoch})), # Stores turn_id with created_at_epoch as score
+                    _span_await("sadd", self.async_redis_client.sadd(f"user:{user_id}:sessions", session_id)), # Stores session_id in user's session set
                 )
 
                 # Schedule background embed + index load for this turn

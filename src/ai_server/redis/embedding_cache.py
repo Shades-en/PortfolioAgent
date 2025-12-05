@@ -1,12 +1,22 @@
 from redisvl.extensions.cache.embeddings import EmbeddingsCache
-from langchain_core.embeddings import Embeddings
 from redis.asyncio import Redis as AsyncRedis
+
+from langchain_core.embeddings import Embeddings
+
 from typing import List
 import logging
+
+from opentelemetry import trace
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+
 from ai_server.ai.providers.embedding_provider import EmbeddingProvider
 from ai_server.utils.singleton import SingletonMeta
+from ai_server.utils.tracing import async_spanner
+from ai_server.constants import CACHE
+
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 class RedisEmbeddingsCache(metaclass=SingletonMeta):
     def __init__(self, async_redis_client: AsyncRedis, embedding_provider: EmbeddingProvider) -> None:
@@ -23,25 +33,71 @@ class RedisEmbeddingsCache(metaclass=SingletonMeta):
     async def embed_query(self, text: str, metadata: dict = None, skip_cache: bool = False) -> List[float]:
         if not skip_cache:
             logger.info("Checking cache for query")
-            if result := await self.cache.aget(text=text, model_name=self.model_name):
+            async with async_spanner(
+                tracer=tracer,
+                name="EmbeddingCacheCheck",
+                kind=CACHE,
+                input=text,
+                metadata={
+                    "query_length": len(text),
+                    "model_name": self.model_name,
+                },
+            ):
+                result = await self.cache.aget(text=text, model_name=self.model_name)
+            
+            if result:
                 logger.info("Cached embedding found")
                 return result.get("embedding")
+        
         logger.info("New embedding computed")
-        embedding = await self.embedding_client.aembed_query(text)
+        async with async_spanner(
+            tracer=tracer,
+            name="ComputeEmbedding",
+            kind=OpenInferenceSpanKindValues.EMBEDDING,
+            input=text,
+            metadata={
+                "query_length": len(text),
+                "model_name": self.model_name,
+                "skip_cache": skip_cache,
+            },
+        ):
+            embedding = await self.embedding_client.aembed_query(text)
+        
         if not skip_cache:
-            await self.cache.aset( 
-                text=text,
-                model_name=self.model_name,
-                embedding=embedding,
-                metadata=metadata,
-            )
+            async with async_spanner(
+                tracer=tracer,
+                name="EmbeddingCacheStore",
+                kind=CACHE,
+                input=text,
+                metadata={
+                    "query_length": len(text),
+                    "model_name": self.model_name,
+                },
+            ):
+                await self.cache.aset( 
+                    text=text,
+                    model_name=self.model_name,
+                    embedding=embedding,
+                    metadata=metadata,
+                )
         logger.info("New embedding computed")
         return embedding
 
     async def embed_documents(self, documents: List[str], metadata: dict = None, skip_cache: bool = False) -> List[float]:
         if not skip_cache:
             logger.info(f"Checking cache for {len(documents)} documents")
-            cached_embedded_docs = await self.cache.amget(texts=documents, model_name=self.model_name)
+            async with async_spanner(
+                tracer=tracer,
+                name="EmbeddingCacheCheck",
+                kind=CACHE,
+                input=documents,
+                metadata={
+                    "document_count": len(documents),
+                    "model_name": self.model_name,
+                },
+            ):
+                cached_embedded_docs = await self.cache.amget(texts=documents, model_name=self.model_name)
+            
             not_cached_documents = []
             index = 0
             
@@ -56,9 +112,20 @@ class RedisEmbeddingsCache(metaclass=SingletonMeta):
             
             # If there are documents that are not cached, compute their embeddings and add them to the cache
             if len(not_cached_documents) > 0:
-                not_cached_embeddings = await self.embedding_client.aembed_documents(
-                    texts=[document["text"] for document in not_cached_documents],
-                )
+                async with async_spanner(
+                    tracer=tracer,
+                    name="ComputeEmbeddings",
+                    kind=OpenInferenceSpanKindValues.EMBEDDING,
+                    input=documents,
+                    metadata={
+                        "document_count": len(not_cached_documents),
+                        "model_name": self.model_name,
+                    },
+                ):
+                    not_cached_embeddings = await self.embedding_client.aembed_documents(
+                        texts=[document["text"] for document in not_cached_documents],
+                    )
+                
                 documents = [
                     {
                         "text": document["text"],
@@ -68,7 +135,19 @@ class RedisEmbeddingsCache(metaclass=SingletonMeta):
                     }
                     for document, embedding in zip(not_cached_documents, not_cached_embeddings)
                 ]
-                await self.cache.amset(documents)
+                
+                async with async_spanner(
+                    tracer=tracer,
+                    name="EmbeddingCacheStore",
+                    kind=CACHE,
+                    input=documents,
+                    metadata={
+                        "document_count": len(documents),
+                        "model_name": self.model_name,
+                    },
+                ):
+                    await self.cache.amset(documents)
+                
                 logger.info(f"{len(not_cached_documents)} Embeddings needed to be computed out of {len(cached_embedded_docs)}")
 
                 # Update the cached embedded documents with the new embeddings at their original index
@@ -82,8 +161,20 @@ class RedisEmbeddingsCache(metaclass=SingletonMeta):
             else:
                 logger.info("No new embeddings need to becomputed")
             return [doc["embedding"] for doc in cached_embedded_docs]
-            
-        embeddings = await self.embedding_client.aembed_documents(documents)
+        
+        async with async_spanner(
+            tracer=tracer,
+            name="ComputeEmbeddings",
+            kind=OpenInferenceSpanKindValues.EMBEDDING,
+            input=documents,
+            metadata={
+                "document_count": len(documents),
+                "model_name": self.model_name,
+                "skip_cache": True,
+            },
+        ):
+            embeddings = await self.embedding_client.aembed_documents(documents)
+        
         documents = [
             {
                 "text": document,

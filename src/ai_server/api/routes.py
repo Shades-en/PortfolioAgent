@@ -24,6 +24,10 @@ def chat(chat_request: ChatRequest):
     )
     return Runner.run(agent, chat_request.query)
 
+@router.get("/chat_history", tags=["Chat History"])
+def chat_history():
+    return {"status": "ok"}
+
 # @router.delete("/conversation_history", tags=["DEV - Conversation History"])
 # def delete_all_conversation_history():
 #     redis_client.delete_conv_index_data()

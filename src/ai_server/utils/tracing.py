@@ -54,6 +54,7 @@ async def async_spanner(
     turn_id: Optional[str] = None,
     kind: Optional[str] = None,
     input: Optional[str] = None,
+    output: Optional[str] = None,
     metadata: Optional[Mapping[str, Any]] = None,
 ):
     with tracer.start_as_current_span(name) as span:
@@ -67,12 +68,15 @@ async def async_spanner(
             "metadata": json.dumps(metadata) if isinstance(metadata, Mapping) else (metadata if isinstance(metadata, (str, int, float, bool)) else ""),
         })
         try:
-            yield
+            yield span
         except Exception as e:
             span.set_status(Status(StatusCode.ERROR, str(e)))
             span.record_exception(e)
             raise
         else:
+            # Set output attribute if provided
+            if output is not None:
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, output)
             span.set_status(Status(StatusCode.OK))
 
 def trace_operation(
