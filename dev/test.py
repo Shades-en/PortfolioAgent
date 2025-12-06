@@ -10,7 +10,6 @@ from ai_server.ai.tools.tools import GetWeather, GetHoroscope, GetCompanyName, T
 from typing import List
 import asyncio
 from dotenv import load_dotenv
-import time
 import os
 from arize.otel import register
 from openinference.instrumentation.openai import OpenAIInstrumentor
@@ -66,11 +65,18 @@ with spanner(
         embedding_cache=embedding_cache,
     )
 
+    redis_session_manager = RedisSessionManager(
+        async_redis_client=async_redis_client,
+        embedding_cache=embedding_cache,
+    )
+
 session_id = 'session:ee8fbe625269404b95a8802f794c9a47'
 user_id = 'user:a7beae66086f4116af33af72ffd6b2f8'
 
-# openai_client = OpenAIResponsesAPI()
-openai_client = OpenAIChatCompletionAPI()
+openai_client = OpenAIResponsesAPI()
+# openai_client = OpenAIChatCompletionAPI()
+
+skip_cache = bool(os.getenv("SKIP_CACHE", False))
 
 turn_id = generate_id(8)
 turn_id = f"turn:{turn_id}"
@@ -94,6 +100,7 @@ async def generate_response(
     user_id: str, 
     turn_id: str,
     tools: List[Tool] = [],
+    **kwargs,
 ):
     async with async_spanner(
         tracer=tracer,
@@ -105,7 +112,7 @@ async def generate_response(
         input=query,
     ):
         if conversation_history[-1].role != Role.TOOL:
-            semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query)
+            semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query, skip_embedding_cache=skip_cache)
             if len(semantic_conv_history) > 0:
                 if conversation_history[-1].role != Role.SYSTEM:
                     conversation_history.extend(semantic_conv_history)
@@ -147,11 +154,6 @@ async def generate_answer(query: str, session_id: str, user_id: str, turn_id: st
         turn_id=turn_id,
         input=query,
     ) as span:
-        redis_session_manager = await RedisSessionManager.create(
-            async_redis_client=async_redis_client,
-            embedding_cache=embedding_cache,
-        )
-        
         step = 1
         max_step = 3
         conversation_history: List[Message] = [system_message]
@@ -168,6 +170,7 @@ async def generate_answer(query: str, session_id: str, user_id: str, turn_id: st
                 user_id=user_id,
                 turn_id=turn_id,
                 tools=[GetWeather(), GetHoroscope(), GetCompanyName()],
+                skip_semantic_cache=skip_cache,
             )
             
             # Add messages to long-term store under its own span
@@ -220,24 +223,17 @@ if __name__ == "__main__":
     asyncio.run(interactive_main())
     
 # Next steps
+# 1. Rewrite long term memory with summarisation algorithm - research whether the summary goes in user role or System role
+# 2. Add field for token count for each message
 # 2. Add route for getting all chat history - make sure nothing is missed
 # 3. Add route for getting all sessions
 # 4. Implement the agentic Loop
 
+# First message in session?
+#     → Skip context retrieval entirely (no history exists)
 
-# Conclusions regarding performance
-# 1. Semantic cache check takes 4 to 5 seconds 
-#   A. Embedding cache Miss - unknown time
-#   B. Creating embeddings to check cache takes 2 seconds (First time embedding cache miss - thats why long)
-#   C. Semantic Cache check is taking close to 2 to 3 seconds. Check in redis docs what is expected
-# 2. Relevent messages obtainment takes 1.5 to 1.75 seconds - Sequential operations - REQUIREMENT
-#   A. Embedding cache check is taking 0.7 to 1 seconds - Maybe needed to avoid recomputing embeddings for semantic cache check, Relevant messages per session, semantic cache store
-# 3. Pure LLM Generation time varies dependending on the output message length - REQUIREMENT
-# 4. Semantic cache storage takes 0.9 to 1 second - Includes Embedding cache check (Hit) and retrieval time and Semantic cache store time
-# 5. Redis message addition takes 1.3 to 1.5 seconds - 3 parellel + 1 background operation
-#   A. the max time among all parallel operation is the final time taken for Redis message addition
+# Short session (< 10 messages)?
+#     → Fetch last N messages directly (no vector search, instant)
 
-
-# Why need semantic cache -
-# 1. When semantic cache hit -> No need to go through LLM
-# 2. You get response very quickly
+# Long session?
+#     → Use vector search (accept the latency, but it's rare)
