@@ -4,10 +4,10 @@ from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 from ai_server.redis.session_manager import RedisSessionManager
 from ai_server.redis.semantic_cache import ConversationMemoryCache
 from ai_server.ai.providers.openai_provider import OpenAIChatCompletionAPI, OpenAIResponsesAPI, OpenAIEmbeddingProvider
+from ai_server.schemas.context import Context
 from ai_server.schemas.message import Message, Role
 from ai_server.utils.general import generate_id
-from ai_server.ai.tools.tools import GetWeather, GetHoroscope, GetCompanyName, Tool
-from typing import List
+from ai_server.ai.tools.tools import GetWeather, GetHoroscope, GetCompanyName
 import asyncio
 from dotenv import load_dotenv
 import os
@@ -79,27 +79,13 @@ openai_client = OpenAIResponsesAPI()
 skip_cache = bool(os.getenv("SKIP_CACHE", False))
 
 turn_id = generate_id(8)
-turn_id = f"turn:{turn_id}"
-system_message = Message(
-    role=Role.SYSTEM,
-    tool_call_id="null",
-    user_id=user_id,
-    session_id=session_id,
-    metadata={},
-    turn_id=turn_id,
-    content="You are a helpful assistant.",
-    function_call=None,
-)
 
 @semantic_cache.cache
 async def generate_response(
-    conversation_history: List[Message], 
-    redis_session_manager: RedisSessionManager, 
     query: str,
     session_id: str, 
     user_id: str, 
     turn_id: str,
-    tools: List[Tool] = [],
     **kwargs,
 ):
     async with async_spanner(
@@ -111,40 +97,84 @@ async def generate_response(
         turn_id=turn_id,
         input=query,
     ):
-        if conversation_history[-1].role != Role.TOOL:
-            semantic_conv_history = await redis_session_manager.get_relevant_messages_by_session_id(session_id, user_id, query, skip_embedding_cache=skip_cache)
-            if len(semantic_conv_history) > 0:
-                if conversation_history[-1].role != Role.SYSTEM:
-                    conversation_history.extend(semantic_conv_history)
+        turn_completed = False
+        tool_call = False
 
-        # Consider Query only when previous message is not a tool call, 
-        # if previous message is tool call we pass it to LLM for summarisation without user query
-        # as query associated with it is already stored in conversation history
-        pure_user_query = query and conversation_history[-1].role != Role.TOOL
-        async with async_spanner(
-            tracer=tracer,
-            name="LLMGenerateResponse",
-            kind=OpenInferenceSpanKindValues.CHAIN,
-            session_id=session_id,
-            user_id=user_id,
-            turn_id=turn_id,
-            input=query,
-            metadata={
-                "pure_user_query": bool(pure_user_query),
-            },
-        ):
-            messages = await openai_client.generate_response(
-                query=query if pure_user_query else None,
-                conversation_history=conversation_history,
-                user_id=user_id,
-                turn_id=turn_id,
-                session_id=session_id,
-                tools=tools
+        conversation_history = []
+        messages = []
+
+        summary = None
+        turns_after_last_summary = 0
+        total_token_count_since_last_summary = 0
+        total_token_count_of_context = 0
+
+        while not turn_completed:
+            if not tool_call:
+                context: Context = await redis_session_manager.get_context_for_llm(session_id)
+                system_message = openai_client.build_system_message(
+                    instructions="You are a helpful assistant.",
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    summary=context.summary,
+                )
+                conversation_history = [system_message] + context.previous_conversation
+                user_query_message = Message(
+                    role=Role.HUMAN,
+                    tool_call_id="null",
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    metadata={},
+                    content=query,
+                    function_call=None,
+                )
+                conversation_history.append(user_query_message)
+                turns_after_last_summary = context.turns_after_last_summary 
+                total_token_count_since_last_summary = context.total_token_count_since_last_summary
+                total_token_count_of_context = context.context_token_count
+
+            # async with async_spanner(
+            #     tracer=tracer,
+            #     name="LLMGenerateResponse",
+            #     kind=OpenInferenceSpanKindValues.CHAIN,
+            #     session_id=session_id,
+            #     user_id=user_id,
+            #     turn_id=turn_id,
+            #     input=query,
+            #     metadata={
+            #         "pure_user_query": bool(pure_user_query),
+            #     },
+            # ):
+            (messages, tool_call), summary = await asyncio.gather(
+                openai_client.generate_response(
+                    conversation_history=conversation_history,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    tools=[GetWeather(), GetHoroscope(), GetCompanyName()],
+                ),
+                openai_client.generate_summary(
+                    conversation_to_summarize=context.previous_conversation,
+                    previous_summary=context.summary,
+                    query=query,
+                    turns_after_last_summary=turns_after_last_summary,
+                    context_token_count=total_token_count_of_context,
+                    tool_call=tool_call,
+                ),
             )
-        return messages
+
+            # If tool call is not made then turn is completed. If tool call is made 
+            # then turn will be completed once AI executes the tool call, in the next iteration.
+            if tool_call:
+                conversation_history.extend(messages)
+            else:
+                turn_completed = True
+
+        return messages, summary, turns_after_last_summary, total_token_count_since_last_summary
 
 
-async def generate_answer(query: str, session_id: str, user_id: str, turn_id: str):
+async def generate_answer(query: str, session_id: str, user_id: str, turn_id: str, turn_number: int):
     async with async_spanner(
         tracer=tracer,
         name="GenerateAnswer",
@@ -153,78 +183,73 @@ async def generate_answer(query: str, session_id: str, user_id: str, turn_id: st
         user_id=user_id,
         turn_id=turn_id,
         input=query,
+        metadata={
+            "turn_number": turn_number,
+        },
     ) as span:
-        step = 1
-        max_step = 3
-        conversation_history: List[Message] = [system_message]
+
+        messages, \
+        summary, \
+        turns_after_last_summary, \
+        total_token_count_since_last_summary = await generate_response(
+            query=query,
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=turn_id,
+            skip_semantic_cache=skip_cache,
+        )
         
-        while True:
-            if step > max_step:
-                raise Exception("Max step reached")
-
-            messages = await generate_response(
-                conversation_history=conversation_history,
-                redis_session_manager=redis_session_manager,
-                query=query,
-                session_id=session_id,
-                user_id=user_id,
-                turn_id=turn_id,
-                tools=[GetWeather(), GetHoroscope(), GetCompanyName()],
-                skip_semantic_cache=skip_cache,
+        # Add messages to long-term store under its own span
+        async with async_spanner(
+            tracer=tracer,
+            name="RedisAddMessage",
+            kind=DATABASE,
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=turn_id,
+            input=query,
+            metadata={
+                "query": query,
+                "turn_number": turn_number,
+            },
+        ):
+            await redis_session_manager.add_message(
+                messages=messages, 
+                new_summary=summary, 
+                turn_number=turn_number,
+                prev_n_turn_after_last_summary=turns_after_last_summary, 
+                prev_total_token_count_since_last_summary=total_token_count_since_last_summary,
             )
-            
-            # Add messages to long-term store under its own span
-            async with async_spanner(
-                tracer=tracer,
-                name="RedisAddMessage",
-                kind=DATABASE,
-                session_id=session_id,
-                user_id=user_id,
-                turn_id=turn_id,
-                input=query,
-                metadata={
-                    "step": step,
-                    "max_step": max_step,
-                    "query": query,
-                },
-            ):
-                await redis_session_manager.add_message(messages)
 
-            # Only during user query we replace conv history with semantic history otherwise all messages generated by AI
-            # have to be added to conv history as it is, because they need to be processed for tool calls
-            conversation_history.extend(messages)
-
-            if len(messages) >= 1:
-                if messages[0].role == Role.HUMAN:
-                    for message in messages[1:]:
-                        if message.content:
-                            print(f"{message.role.value}:", message.content)
-                else:
-                    for message in messages:
-                        if message.content:
-                            print(f"{message.role.value}:", message.content)
-            if messages[-1].role == Role.AI:
-                # Set the output attribute with the last AI message content
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, messages[-1].content or "")
-                break
-            elif messages[-1].role == Role.TOOL:
-                step+=1
+        if len(messages) >= 1:
+            if messages[0].role == Role.HUMAN:
+                for message in messages[1:]:
+                    if message.content:
+                        print(f"{message.role.value}:", message.content)
+            else:
+                for message in messages:
+                    if message.content:
+                        print(f"{message.role.value}:", message.content)
+        if messages[-1].role == Role.AI:
+            # Set the output attribute with the last AI message content
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, messages[-1].content or "")
 
 async def interactive_main():
+    turn_number = 0
     while True:
         # Read blocking input without leaving the event loop
         query = await asyncio.get_running_loop().run_in_executor(None, input, "You: ")
         if query == "exit":
             break
-        turn_id = f"turn:{generate_id(8)}"
-        await generate_answer(query, session_id, user_id, turn_id)
+        turn_id = generate_id(8)
+        turn_number += 1
+        await generate_answer(query, session_id, user_id, turn_id, turn_number)
 
 if __name__ == "__main__":
     asyncio.run(interactive_main())
     
 # Next steps
 # 1. Rewrite long term memory with summarisation algorithm - research whether the summary goes in user role or System role
-# 2. Add field for token count for each message
 # 2. Add route for getting all chat history - make sure nothing is missed
 # 3. Add route for getting all sessions
 # 4. Implement the agentic Loop

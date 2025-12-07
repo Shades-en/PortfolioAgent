@@ -1,5 +1,10 @@
 from uuid import uuid4
 import os
+import tiktoken
+from config import BASE_MODEL
+
+# Cached encoder instance
+_tiktoken_encoder: tiktoken.Encoding | None = None
 
 def generate_id(length: int = 8) -> str:
     """Generate a short UUID with specified length."""
@@ -24,8 +29,16 @@ def _env_flag(name: str, default: bool = False) -> bool:
         return default
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
+def get_token_count(text: str) -> int:
+    """Count tokens in text using tiktoken encoder for BASE_MODEL."""
+    global _tiktoken_encoder
+    if _tiktoken_encoder is None:
+        _tiktoken_encoder = tiktoken.encoding_for_model(BASE_MODEL)
+    return len(_tiktoken_encoder.encode(text))
+
 __all__ = [
     "generate_id", 
     "get_env_int", 
-    "_env_flag"
+    "_env_flag",
+    "get_token_count",
 ]

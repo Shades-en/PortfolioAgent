@@ -1,14 +1,15 @@
-
-from ai_server.constants import GPT_4_1, OPENAI
-
 from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
 from ai_server.ai.providers.llm_provider import LLMProvider
 from ai_server.ai.providers.embedding_provider import EmbeddingProvider
 from ai_server.ai.tools.tools import Tool
+from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
 
 from ai_server.schemas.message import Message, Role, FunctionCallRequest
+from ai_server.utils.general import get_env_int, get_token_count
+from ai_server.config import BASE_MODEL, BASE_EMBEDDING_MODEL
+from ai_server.constants import OPENAI
 
 import asyncio
 import json
@@ -22,9 +23,9 @@ from openai.types.chat.chat_completion import ChatCompletion
 import os
 from typing import List, Dict
 from abc import ABC, abstractmethod
-
-from ai_server.utils.general import get_env_int
 import logging
+
+from config import MAX_TOKEN_THRESHOLD, MAX_TURNS_TO_FETCH
 
 logger = logging.getLogger(__name__)
 
@@ -32,25 +33,197 @@ class OpenAIProvider(LLMProvider, ABC):
     def __init__(self, temperature: float = 0.7) -> None:
         super().__init__(OPENAI)
         self.temperature = temperature
-        self.client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        self.async_client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
     @abstractmethod
-    def generate_response(
+    async def _call_llm(
+        self,
+        input_messages: List[Dict],
+        model: str = BASE_MODEL,
+        temperature: float | None = None,
+        tools: List[Dict] | None = None,
+        tool_choice: str | None = None,
+        instructions: str | None = None,
+    ) -> any:
+        """Generic wrapper for OpenAI API calls. Implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def _convert_to_openai_compatible_messages(self, message: Message) -> Dict:
+        """Convert Message to OpenAI-compatible format. Implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
+        """Convert tools to OpenAI-compatible format. Implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    async def _handle_ai_messages_and_tool_calls(
         self, 
-        query: str, 
+        response: any, 
+        user_id: str, 
+        session_id: str,
+        turn_id: str,
+        tools: List[Tool],
+    ) -> List[Message]:
+        """Handle AI response and tool calls. Implemented by subclasses."""
+        pass
+
+    async def generate_response(
+        self, 
         conversation_history: List[Message], 
         user_id: str, 
-        session_id:str, 
+        session_id: str, 
         turn_id: str,
         tools: List[Tool] = [], 
         tool_choice: str = "auto",
-        model_name: str = GPT_4_1
+        model_name: str = BASE_MODEL
     ) -> List[Message]:
-        pass
+        """Generate a response from the LLM."""
+        input_messages = list(map(self._convert_to_openai_compatible_messages, conversation_history))
+        response = await self._call_llm(
+            input_messages=input_messages,
+            model=model_name,
+            tools=self._convert_tools_to_openai_compatible(tools),
+            tool_choice=tool_choice,
+        )
+        ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
+        if ai_messages[-1].role == Role.TOOL:
+            tool_call = True
+        return ai_messages, tool_call
+
+    async def _summarise(
+        self,
+        conversation_to_summarize: List[Message], 
+        previous_summary: str | None, 
+    ) -> str:
+        """Generate a summary of the conversation combined with previous summary."""
+        # Build the input for summarization
+        summary_input = []
+        if previous_summary:
+            summary_input.append({
+                "role": "user",
+                "content": f"Previous conversation summary:\n{previous_summary}"
+            })
+        
+        # Add conversation messages
+        conversation_text = "\n".join([
+            f"{msg.role.value}: {msg.content}" 
+            for msg in conversation_to_summarize 
+            if msg.content
+        ])
+        summary_input.append({
+            "role": "user", 
+            "content": f"New conversation to incorporate:\n{conversation_text}\n\nPlease provide an updated summary."
+        })
+        
+        response = await self._call_llm(
+            input_messages=summary_input,
+            instructions=CONVERSATION_SUMMARY_PROMPT,
+            temperature=0.3,  # Lower temperature for more consistent summaries
+        )
+        return response.output_text
+
+    async def generate_summary(
+        self, 
+        conversation_to_summarize: List[Message], 
+        previous_summary: str | None, 
+        query: str, 
+        turns_after_last_summary: int,
+        context_token_count: int,
+        tool_call: bool
+    ) -> str | None:
+        """
+        Generate a new summary if token threshold or turn limit is exceeded.
+        
+        Args:
+            conversation_to_summarize: Messages to summarize
+            previous_summary: Existing summary to incorporate
+            query: Current user query
+            turns_after_last_summary: Number of turns since last summary
+            context_token_count: Current context token count
+            pure_user_query: Whether the query is from the user
+            
+        Returns:
+            New summary string if summarization triggered, None otherwise
+        """
+        if not tool_call:
+            query_tokens = get_token_count(query)
+            should_summarize = (
+                (query_tokens + context_token_count >= MAX_TOKEN_THRESHOLD) or 
+                (turns_after_last_summary >= MAX_TURNS_TO_FETCH)
+            )
+            if should_summarize:
+                return await self._summarise(conversation_to_summarize, previous_summary)
+        return None
+
+    @classmethod
+    def build_system_message(
+        cls,
+        instructions: str,
+        user_id: str,
+        session_id: str,
+        turn_id: str,
+        summary: str | None = None,
+        metadata: dict | None = None,
+    ) -> Message:
+        """
+        Build a system message with optional summary context.
+        
+        Args:
+            instructions: Base system prompt (e.g., "You are a helpful assistant.")
+            user_id: User identifier
+            session_id: Session identifier
+            turn_id: Turn identifier
+            summary: Optional summary of earlier conversation to include
+            metadata: Optional metadata dict
+            
+        Returns:
+            Message object with Role.SYSTEM
+        """
+        if summary:
+            content = f"{instructions}\n\n---\nSummary of earlier conversation:\n{summary}"
+        else:
+            content = instructions
+        
+        return Message(
+            role=Role.SYSTEM,
+            tool_call_id="null",
+            user_id=user_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            metadata=metadata or {},
+            content=content,
+            function_call=None,
+        )
 
 class OpenAIResponsesAPI(OpenAIProvider):
     def __init__(self, temperature: float = 0.7) -> None:
         super().__init__(temperature)
+
+    async def _call_llm(
+        self,
+        input_messages: List[Dict],
+        model: str = BASE_MODEL,
+        temperature: float | None = None,
+        tools: List[Dict] | None = None,
+        tool_choice: str | None = None,
+        instructions: str | None = None,
+    ) -> Response:
+        """Generic wrapper for OpenAI Responses API calls."""
+        kwargs = {
+            "model": model,
+            "input": input_messages,
+            "temperature": temperature if temperature is not None else self.temperature,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
+        if instructions:
+            kwargs["instructions"] = instructions
+        return await self.async_client.responses.create(**kwargs)
 
     def _convert_to_openai_compatible_messages(self, message: Message) -> Dict:
         role = "user"
@@ -154,42 +327,6 @@ class OpenAIResponsesAPI(OpenAIProvider):
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
-    async def generate_response(
-        self, 
-        query: str | None, 
-        conversation_history: List[Message], 
-        user_id: str, 
-        session_id: str, 
-        turn_id: str,
-        tools: List[Tool] = [], 
-        tool_choice: str = "auto",
-        model_name: str = GPT_4_1
-    ) -> List[Message]:
-        if query:
-            formatted_query = Message(
-                role=Role.HUMAN,
-                tool_call_id="null",
-                user_id=user_id,
-                session_id=session_id,
-                turn_id=turn_id,
-                metadata={},
-                content=query,
-                function_call=None,
-            )
-            input_messages = conversation_history + [formatted_query]
-        else:
-            input_messages = conversation_history
-        input_messages = list(map(self._convert_to_openai_compatible_messages, input_messages))
-        response = self.client.responses.create(
-            model=model_name,
-            input=input_messages,
-            temperature=self.temperature,
-            tools=self._convert_tools_to_openai_compatible(tools),
-            tool_choice=tool_choice,
-        )
-        ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
-        return [formatted_query, *ai_messages] if query else ai_messages
-
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
         for tool in tools:
@@ -215,7 +352,6 @@ class OpenAIResponsesAPI(OpenAIProvider):
             openai_tools.append(openai_tool)
         return openai_tools
         
-
 class OpenAIChatCompletionAPI(OpenAIProvider):
     def __init__(self, temperature: float = 0.7) -> None:
         super().__init__(temperature)
@@ -326,41 +462,27 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 
-    async def generate_response(
-        self, 
-        query: str | None, 
-        conversation_history: List[Message], 
-        user_id: str, 
-        session_id: str, 
-        turn_id: str,
-        tools: List[Tool] = [], 
-        tool_choice: str = "auto",
-        model_name: str = GPT_4_1
-    ) -> List[Message]:
-        if query:
-            formatted_query = Message(
-                role=Role.HUMAN,
-                tool_call_id="null",
-                user_id=user_id,
-                session_id=session_id,
-                turn_id=turn_id,
-                metadata={},
-                content=query,
-                function_call=None,
-            )
-            input_messages = conversation_history + [formatted_query]
-        else:
-            input_messages = conversation_history
-        input_messages = list(map(self._convert_to_openai_compatible_messages, input_messages))
-        response = self.client.chat.completions.create(
-            model=model_name,
-            messages=input_messages,
-            temperature=self.temperature,
-            tools=self._convert_tools_to_openai_compatible(tools),
-            tool_choice=tool_choice,
-        )
-        ai_messages = await self._handle_ai_messages_and_tool_calls(response, user_id, session_id, turn_id, tools)
-        return [formatted_query, *ai_messages] if query else ai_messages
+    async def _call_llm(
+        self,
+        input_messages: List[Dict],
+        model: str = BASE_MODEL,
+        temperature: float | None = None,
+        tools: List[Dict] | None = None,
+        tool_choice: str | None = None,
+        instructions: str | None = None,
+    ) -> ChatCompletion:
+        """Generic wrapper for OpenAI Chat Completions API calls."""
+        kwargs = {
+            "model": model,
+            "messages": input_messages,
+            "temperature": temperature if temperature is not None else self.temperature,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
+        # Note: instructions not supported in Chat Completions API, use system message instead
+        return await self.async_client.chat.completions.create(**kwargs)
 
     def _convert_tools_to_openai_compatible(self, tools: List[Tool]) -> List[Dict]:
         openai_tools = []
@@ -393,7 +515,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     def __init__(
         self, 
-        model_name: str = "text-embedding-3-small", 
+        model_name: str = BASE_EMBEDDING_MODEL, 
         dimensions: int | None = None
     ) -> None:
         self.model_name = model_name

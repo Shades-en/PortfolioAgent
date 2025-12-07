@@ -1,10 +1,11 @@
-from pydantic import BaseModel, model_validator
-from pydantic import Field
+from pydantic import BaseModel, model_validator, Field
 from enum import Enum
-from typing import Self, List
+from typing import Self
 
 from uuid import uuid4
 from datetime import datetime, timezone
+
+from ai_server.utils.general import get_token_count
 
 class Role(Enum):
     HUMAN = 'human'
@@ -23,11 +24,19 @@ class Message(BaseModel):
     metadata: dict
     content: str | None
     function_call: FunctionCallRequest | None
+    token_count: int = 0
     turn_id: str
     session_id: str
     user_id: str
     message_id: str = Field(default_factory=lambda: uuid4().hex)
-    embedding: List[float] | None = None
-    created_at: str = Field(default_factory=lambda: str(datetime.now(timezone.utc)))    
+    created_at: str = Field(default_factory=lambda: str(datetime.now(timezone.utc)))
+    
+    @model_validator(mode="after")
+    def compute_token_count(self) -> Self:
+        """Compute token count from content if not explicitly provided."""
+        if self.token_count == 0 and self.content:
+            self.token_count = get_token_count(self.content)
+        return self    
+
 
 

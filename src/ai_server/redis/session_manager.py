@@ -3,16 +3,17 @@ from ai_server.api.exceptions.redis_exceptions import RedisMessageStoreFailedExc
     RedisRetrievalFailedException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
-from ai_server.schemas.message import Message
-from ai_server.schemas.message import Role
-from ai_server.schemas.message import FunctionCallRequest
+from ai_server.schemas.message import Message, Role, FunctionCallRequest
+from ai_server.schemas.context import Context
 
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
 
+from ai_server.utils.general import get_token_count
 from ai_server.utils.singleton import SingletonMeta
 from ai_server.utils.tracing import async_spanner
 
 from ai_server.constants import DATABASE
+from ai_server.config import MAX_TOKEN_THRESHOLD, MAX_TURNS_TO_FETCH
 
 from typing import List, Dict
 import json
@@ -47,17 +48,16 @@ class RedisSessionManager(metaclass=SingletonMeta):
         turn_id: str,
         created_at: str,
         created_at_epoch: int,
-        prev_n_turns: int,
+        turn_number: int,
         prev_n_turn_after_last_summary: int,
         prev_total_token_count_since_last_summary: int,
         summary: str | None,
-        summary_token_count: int,
     ) -> Dict[str, str | int | None]:
-        # TODO: Use tiktoken to count tokens - Maybe do this in Message pydantic model and just add here
-        turn_token_count = 0 # FILL (includes user + AI role messages + System)
-        total_token_count_since_last_summary = prev_total_token_count_since_last_summary + turn_token_count
+        turn_token_count = 0 
+        for msg in messages:
+            turn_token_count += msg.token_count
+        total_token_count_since_last_summary = prev_total_token_count_since_last_summary + turn_token_count if summary is None else turn_token_count 
         n_turn_after_last_summary = prev_n_turn_after_last_summary + 1 if summary is None else 1
-        n_turn = prev_n_turns + 1
         return {
             "created_at_epoch": created_at_epoch,
             "created_at": created_at,
@@ -66,8 +66,8 @@ class RedisSessionManager(metaclass=SingletonMeta):
             "session_id": session_id,
             "turn_token_count": turn_token_count, # token count of the turn
             "summary_for_last_n_turns": summary, # Running summary of the last n turns from the beginning of conversation
-            "summary_token_count": summary_token_count, # token count of the summary
-            "n_turn": n_turn, # nth turn in the conversation session
+            "summary_token_count": get_token_count(summary), # token count of the summary
+            "turn_number": turn_number, # nth turn in the conversation session
             "n_turn_after_last_summary": n_turn_after_last_summary, # nth turn counted from the record where last summary was attached
             # total token count of the conversation session since last summary - should not include summary token count 
             "total_token_count_since_last_summary": total_token_count_since_last_summary, 
@@ -91,12 +91,21 @@ class RedisSessionManager(metaclass=SingletonMeta):
     async def add_message(
         self, 
         messages: List[Message], 
-        summary: str | None, 
-        prev_n_turns: int, 
+        new_summary: str | None, 
+        turn_number: int, 
         prev_n_turn_after_last_summary: int,
         prev_total_token_count_since_last_summary: int,
-        summary_token_count: int,
     ) -> None:
+        """
+        Store a turn's messages in Redis with associated metadata.
+        
+        Args:
+            messages: List of messages in this turn (user query + AI response + tool calls)
+            new_summary: New summary generated for this turn, or None if no summarization occurred
+            turn_number: The sequential turn number in the conversation session
+            prev_n_turn_after_last_summary: Number of turns since last summary (from previous turn's context)
+            prev_total_token_count_since_last_summary: Token count since last summary (from previous turn's context)
+        """
         try:
             if not messages:
                 return
@@ -116,11 +125,10 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 turn_id=turn_id,
                 created_at=created_at,
                 created_at_epoch=created_at_epoch,
-                prev_n_turns=prev_n_turns,
+                turn_number=turn_number,
                 prev_n_turn_after_last_summary=prev_n_turn_after_last_summary,
                 prev_total_token_count_since_last_summary=prev_total_token_count_since_last_summary,
-                summary=summary,
-                summary_token_count=summary_token_count,
+                summary=new_summary,
             )
             
             # Session key to store session data in a time sorted manner
@@ -281,151 +289,108 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 note=str(e)
             )
 
+    def _build_context_result(
+        self,
+        summary_text: str | None,
+        messages: List[Message],
+        total_tokens: int,
+        most_recent_turn: Dict,
+    ) -> Context:
+        """Build the standardized context result dictionary."""
+        return Context(
+            summary=summary_text,
+            previous_conversation=messages,
+            context_token_count=total_tokens,
+            turns_after_last_summary=most_recent_turn.get("n_turn_after_last_summary", 0),
+            total_token_count_since_last_summary=most_recent_turn.get("total_token_count_since_last_summary", 0),
+        )
+    
+    def _find_summary_position(self, turns: List[Dict]) -> tuple[int | None, str | None, int]:
+        """Find the most recent turn with a summary. Returns (position, text, token_count)."""
+        for i, turn in enumerate(turns):
+            if turn.get("summary_for_last_n_turns"):
+                return i, turn["summary_for_last_n_turns"], turn.get("summary_token_count", 0)
+        return None, None, 0
+    
+    def _select_additional_turns(self, turns: List[Dict], start_idx: int, budget: int) -> List[Dict]:
+        """Select older turns that fit within the remaining token budget."""
+        additional = []
+        remaining = budget
+        for turn in turns[start_idx:]:
+            turn_tokens = turn.get("turn_token_count", 0)
+            if turn_tokens > remaining:
+                break
+            additional.append(turn)
+            remaining -= turn_tokens
+        return additional
+
     async def get_context_for_llm(
         self,
         session_id: str,
-        max_token_threshold: int = 50000,
-        max_turns_to_fetch: int = 100,
-    ) -> Dict[str, any]:
+        max_token_threshold: int = MAX_TOKEN_THRESHOLD,
+        max_turns_to_fetch: int = MAX_TURNS_TO_FETCH,
+    ) -> Context:
         """
         Get conversation context for LLM using summarization-aware retrieval.
         
-        Algorithm:
-        1. Retrieve recent N turns (default 100)
-        2. Find the most recent turn with a summary (position S)
-        3. Turns from S to most recent are mandatory context
-        4. If token count < threshold, add older turns until threshold reached
-        
         Args:
-            session_id: The session ID
-            max_token_threshold: Maximum token budget for context
-            max_turns_to_fetch: Maximum turns to retrieve from Redis
-            
+            session_id: The session ID to retrieve context for
+            max_token_threshold: Maximum token budget for context (default from config)
+            max_turns_to_fetch: Maximum number of turns to retrieve from Redis (default from config)
+        
         Returns:
-            Dict with:
-                - 'summary': The summary text (if found)
-                - 'messages': List of Message objects to include as context
-                - 'total_tokens': Estimated token count
-                - 'summary_position': Position where summary was found (or None)
+            Context object containing summary, previous_conversation messages,
+            context_token_count, turns_after_last_summary, and total_token_count_since_last_summary
+        
+        Algorithm:
+            1. Retrieve recent N turns (default 100)
+            2. Find the most recent turn with a summary (position S)
+            3. Turns from S to most recent are mandatory context
+            4. If token count < threshold, add older turns until threshold reached
         """
         try:
             turn_key = f"session:{session_id}:turns"
-            
-            # Step 1: Get recent N turn_ids (most recent first)
             turn_ids = await self.async_redis_client.zrevrange(turn_key, 0, max_turns_to_fetch - 1)
             
             if not turn_ids:
-                return {
-                    "summary": None,
-                    "messages": [],
-                    "total_tokens": 0,
-                    "summary_position": None,
-                    "n_turn": 0,
-                    "n_turn_after_last_summary": 0,
-                    "total_token_count_since_last_summary": 0,
-                    "summary_token_count": 0,
-                }
+                return self._build_context_result(None, [], 0, {})
             
-            # Fetch all turn payloads in one MGET call
+            # Fetch and parse turn payloads (index 0 = most recent)
             turn_kv_keys = [f"turn:{tid}" for tid in turn_ids]
             raw_payloads = await self.async_redis_client.mget(turn_kv_keys)
-            
-            # Parse payloads (index 0 = most recent)
-            turns: List[Dict] = []
-            for raw in raw_payloads:
-                if raw:
-                    turns.append(json.loads(raw))
+            turns = [json.loads(raw) for raw in raw_payloads if raw]
             
             if not turns:
-                return {
-                    "summary": None,
-                    "messages": [],
-                    "total_tokens": 0,
-                    "summary_position": None,
-                    "n_turn": 0,
-                    "n_turn_after_last_summary": 0,
-                    "total_token_count_since_last_summary": 0,
-                    "summary_token_count": 0,
-                }
+                return self._build_context_result(None, [], 0, {})
             
-            # Step 2: Find position S where summary exists (scanning from most recent)
-            summary_position = None
-            summary_text = None
-            summary_token_count = 0
+            # Find summary position and determine mandatory turns
+            summary_position, summary_text, summary_token_count = self._find_summary_position(turns)
+            mandatory_turns = turns[:summary_position + 1] if summary_position is not None else turns
             
-            for i, turn in enumerate(turns):
-                if turn.get("summary_for_last_n_turns"):
-                    summary_position = i
-                    summary_text = turn["summary_for_last_n_turns"]
-                    summary_token_count = turn.get("summary_token_count", 0)
-                    break
+            # Calculate mandatory token count
+            mandatory_token_count = summary_token_count + sum(t.get("turn_token_count", 0) for t in mandatory_turns)
+            most_recent_turn = turns[0]
             
-            # Step 3: Determine mandatory context (turns from S to most recent, i.e., index 0 to S)
-            if summary_position is not None:
-                # Mandatory turns: from index 0 (most recent) to summary_position (inclusive)
-                mandatory_turns = turns[:summary_position + 1]
-            else:
-                # No summary found - all fetched turns are mandatory
-                mandatory_turns = turns
-            
-            # Step 4: Calculate token count for mandatory context
-            mandatory_token_count = summary_token_count
-            for turn in mandatory_turns:
-                mandatory_token_count += turn.get("turn_token_count", 0)
-            
-            # Step 4a: If mandatory context exceeds threshold, use it directly
+            # If mandatory context exceeds threshold, return it directly
             if mandatory_token_count >= max_token_threshold:
-                # Build messages from mandatory turns (reverse to chronological order)
                 context_messages = self._extract_messages_from_turns(mandatory_turns[::-1])
-                # Get metadata from most recent turn (index 0 in mandatory_turns)
-                most_recent_turn = mandatory_turns[0] if mandatory_turns else {}
-                return {
-                    "summary": summary_text,
-                    "messages": context_messages,
-                    "total_tokens": mandatory_token_count,
-                    "summary_position": summary_position,
-                    "n_turn": most_recent_turn.get("n_turn", 0),
-                    "n_turn_after_last_summary": most_recent_turn.get("n_turn_after_last_summary", 0),
-                    "total_token_count_since_last_summary": most_recent_turn.get("total_token_count_since_last_summary", 0),
-                    "summary_token_count": summary_token_count,
-                }
+                return self._build_context_result(
+                    summary_text, context_messages, mandatory_token_count, most_recent_turn
+                )
             
-            # Step 4b: Add older turns until threshold is reached
-            remaining_budget = max_token_threshold - mandatory_token_count
-            
-            # Older turns start after summary_position (or from beginning if no summary)
+            # Add older turns within budget
             older_turns_start = (summary_position + 1) if summary_position is not None else 0
-            additional_turns = []
+            remaining_budget = max_token_threshold - mandatory_token_count
+            additional_turns = self._select_additional_turns(turns, older_turns_start, remaining_budget)
             
-            for turn in turns[older_turns_start:]:
-                turn_tokens = turn.get("turn_token_count", 0)
-                if turn_tokens <= remaining_budget:
-                    additional_turns.append(turn)
-                    remaining_budget -= turn_tokens
-                else:
-                    # Can't fit this turn, stop here
-                    break
-            
-            # Combine: additional_turns (older) + mandatory_turns (newer)
-            # Reverse to get chronological order (oldest first)
+            # Combine and reverse to chronological order (oldest first)
             all_context_turns = additional_turns[::-1] + mandatory_turns[::-1]
-            
-            # all_context_turns is in chronological order (oldest first)
             context_messages = self._extract_messages_from_turns(all_context_turns)
             total_tokens = mandatory_token_count + sum(t.get("turn_token_count", 0) for t in additional_turns)
             
-            # Get metadata from most recent turn (index 0 in turns)
-            most_recent_turn = turns[0] if turns else {}
-            return {
-                "summary": summary_text,
-                "messages": context_messages,
-                "total_tokens": total_tokens,
-                "summary_position": summary_position,
-                "n_turn": most_recent_turn.get("n_turn", 0),
-                "n_turn_after_last_summary": most_recent_turn.get("n_turn_after_last_summary", 0),
-                "total_token_count_since_last_summary": most_recent_turn.get("total_token_count_since_last_summary", 0),
-                "summary_token_count": summary_token_count,
-            }
+            return self._build_context_result(
+                summary_text, context_messages, total_tokens, most_recent_turn
+            )
             
         except Exception as e:
             raise RedisRetrievalFailedException(

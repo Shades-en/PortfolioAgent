@@ -10,12 +10,13 @@ class LLMProvider(ABC, metaclass=SingletonABCMeta):
         self.provider = provider
 
     @abstractmethod
-    def generate_response(
+    async def generate_response(
         self, 
         query: str, 
         conversation_history: List[Message], 
         user_id: str, 
-        session_id:str, 
+        session_id: str, 
+        turn_id: str,
         tools: List[Tool] = []
     ) -> List[Message]:
         pass
