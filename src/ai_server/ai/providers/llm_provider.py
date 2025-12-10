@@ -1,27 +1,80 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Dict
 
-from ai_server.schemas.message import Message, FunctionCallRequest
+from ai_server.types.message import MessageDTO, FunctionCallRequest
 from ai_server.ai.tools.tools import Tool
-from ai_server.utils.singleton import SingletonABCMeta
+from ai_server.config import BASE_MODEL
 
-class LLMProvider(ABC, metaclass=SingletonABCMeta):
-    def __init__(self, provider: str) -> None:
-        self.provider = provider
 
+class LLMProvider(ABC):
+    provider: str = ""
+    temperature: float = 0.7
+
+    @classmethod
     @abstractmethod
-    async def generate_response(
-        self, 
-        query: str, 
-        conversation_history: List[Message], 
-        user_id: str, 
-        session_id: str, 
-        turn_id: str,
-        tools: List[Tool] = []
-    ) -> List[Message]:
+    async def _call_llm(
+        cls,
+        input_messages: List[Dict],
+        model: str = BASE_MODEL,
+        temperature: float | None = None,
+        tools: List[Dict] | None = None,
+        tool_choice: str | None = None,
+        instructions: str | None = None,
+    ) -> any:
+        """Generic wrapper for LLM API calls. Implemented by subclasses."""
         pass
 
-    async def _call_function(self, function_call_request: FunctionCallRequest, tools: List[Tool]) -> str:
+    @classmethod
+    @abstractmethod
+    async def _handle_ai_messages_and_tool_calls(
+        cls, 
+        response: any, 
+        tools: List[Tool],
+    ) -> List[MessageDTO]:
+        """Handle AI response and tool calls. Implemented by subclasses."""
+        pass
+
+    @classmethod
+    @abstractmethod
+    async def generate_response(
+        cls, 
+        conversation_history: List[MessageDTO], 
+        tools: List[Tool] = [], 
+        tool_choice: str = "auto",
+        model_name: str = BASE_MODEL
+    ) -> tuple[List[MessageDTO], bool]:
+        """Generate a response from the LLM."""
+        pass
+
+    @classmethod
+    @abstractmethod
+    async def generate_summary(
+        cls, 
+        conversation_to_summarize: List[MessageDTO], 
+        previous_summary: str | None, 
+        query: str, 
+        turns_after_last_summary: int,
+        context_token_count: int,
+        tool_call: bool = False,
+        new_chat: bool = False
+    ) -> str | None:
+        """Generate a new summary if token threshold or turn limit is exceeded."""
+        pass
+
+    @classmethod
+    @abstractmethod
+    def build_system_message(
+        cls,
+        instructions: str,
+        summary: str | None = None,
+        metadata: dict | None = None,
+    ) -> MessageDTO:
+        """Build a system message with optional summary context."""
+        pass
+
+    @classmethod
+    async def _call_function(cls, function_call_request: FunctionCallRequest, tools: List[Tool]) -> str:
+        """Execute a function call from the tools list."""
         for tool in tools:
             if tool.name == function_call_request.name:
                 return await tool(tool.Arguments(**function_call_request.arguments))

@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "arize-otel>=0.10.0",
+    "beanie[srv]>=2.0.1",
     "dotenv>=0.9.9",
     "fastapi>=0.116.1",
     "httpx>=0.28.1",

@@ -3,10 +3,8 @@ from ai_server.api.exceptions.redis_exceptions import RedisMessageStoreFailedExc
     RedisRetrievalFailedException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
-from ai_server.schemas.message import Message, Role, FunctionCallRequest
-from ai_server.schemas.context import Context
-
-from ai_server.redis.embedding_cache import RedisEmbeddingsCache
+from ai_server.types.message import Message, Role, FunctionCallRequest
+from ai_server.types.context import Context
 
 from ai_server.utils.general import get_token_count
 from ai_server.utils.singleton import SingletonMeta
@@ -36,11 +34,10 @@ TRACE_TURN_ID = "app.turn_id"
 
 
 class RedisSessionManager(metaclass=SingletonMeta):
-    def __init__(self, async_redis_client: AsyncRedis, embedding_cache: RedisEmbeddingsCache) -> None:
+    def __init__(self, async_redis_client: AsyncRedis) -> None:
         self.async_redis_client: AsyncRedis = async_redis_client
-        self.embedding_cache: RedisEmbeddingsCache = embedding_cache
 
-    def _prepare_turn_index_doc(
+    def _prepare_turn_payload(
         self,
         messages: List[Message],
         session_id: str,
@@ -50,13 +47,11 @@ class RedisSessionManager(metaclass=SingletonMeta):
         created_at_epoch: int,
         turn_number: int,
         prev_n_turn_after_last_summary: int,
-        prev_total_token_count_since_last_summary: int,
         summary: str | None,
     ) -> Dict[str, str | int | None]:
         turn_token_count = 0 
         for msg in messages:
             turn_token_count += msg.token_count
-        total_token_count_since_last_summary = prev_total_token_count_since_last_summary + turn_token_count if summary is None else turn_token_count 
         n_turn_after_last_summary = prev_n_turn_after_last_summary + 1 if summary is None else 1
         return {
             "created_at_epoch": created_at_epoch,
@@ -66,11 +61,9 @@ class RedisSessionManager(metaclass=SingletonMeta):
             "session_id": session_id,
             "turn_token_count": turn_token_count, # token count of the turn
             "summary_for_last_n_turns": summary, # Running summary of the last n turns from the beginning of conversation
-            "summary_token_count": get_token_count(summary), # token count of the summary
+            "summary_token_count": get_token_count(summary) if summary else 0, # token count of the summary
             "turn_number": turn_number, # nth turn in the conversation session
             "n_turn_after_last_summary": n_turn_after_last_summary, # nth turn counted from the record where last summary was attached
-            # total token count of the conversation session since last summary - should not include summary token count 
-            "total_token_count_since_last_summary": total_token_count_since_last_summary, 
             "messages": [
                 {
                     "role": msg.role.value,
@@ -94,7 +87,6 @@ class RedisSessionManager(metaclass=SingletonMeta):
         new_summary: str | None, 
         turn_number: int, 
         prev_n_turn_after_last_summary: int,
-        prev_total_token_count_since_last_summary: int,
     ) -> None:
         """
         Store a turn's messages in Redis with associated metadata.
@@ -127,7 +119,6 @@ class RedisSessionManager(metaclass=SingletonMeta):
                 created_at_epoch=created_at_epoch,
                 turn_number=turn_number,
                 prev_n_turn_after_last_summary=prev_n_turn_after_last_summary,
-                prev_total_token_count_since_last_summary=prev_total_token_count_since_last_summary,
                 summary=new_summary,
             )
             
@@ -302,7 +293,6 @@ class RedisSessionManager(metaclass=SingletonMeta):
             previous_conversation=messages,
             context_token_count=total_tokens,
             turns_after_last_summary=most_recent_turn.get("n_turn_after_last_summary", 0),
-            total_token_count_since_last_summary=most_recent_turn.get("total_token_count_since_last_summary", 0),
         )
     
     def _find_summary_position(self, turns: List[Dict]) -> tuple[int | None, str | None, int]:
@@ -340,7 +330,7 @@ class RedisSessionManager(metaclass=SingletonMeta):
         
         Returns:
             Context object containing summary, previous_conversation messages,
-            context_token_count, turns_after_last_summary, and total_token_count_since_last_summary
+            context_token_count, turns_after_last_summary
         
         Algorithm:
             1. Retrieve recent N turns (default 100)
@@ -350,14 +340,31 @@ class RedisSessionManager(metaclass=SingletonMeta):
         """
         try:
             turn_key = f"session:{session_id}:turns"
-            turn_ids = await self.async_redis_client.zrevrange(turn_key, 0, max_turns_to_fetch - 1)
+            
+            async with async_spanner(
+                tracer=tracer,
+                name="RedisZrevrange",
+                kind=DATABASE,
+                session_id=session_id,
+                metadata={"max_turns_to_fetch": max_turns_to_fetch},
+            ):
+                turn_ids = await self.async_redis_client.zrevrange(turn_key, 0, max_turns_to_fetch - 1)
             
             if not turn_ids:
                 return self._build_context_result(None, [], 0, {})
             
             # Fetch and parse turn payloads (index 0 = most recent)
             turn_kv_keys = [f"turn:{tid}" for tid in turn_ids]
-            raw_payloads = await self.async_redis_client.mget(turn_kv_keys)
+            
+            async with async_spanner(
+                tracer=tracer,
+                name="RedisMget",
+                kind=DATABASE,
+                session_id=session_id,
+                metadata={"num_keys": len(turn_kv_keys)},
+            ):
+                raw_payloads = await self.async_redis_client.mget(turn_kv_keys)
+            
             turns = [json.loads(raw) for raw in raw_payloads if raw]
             
             if not turns:

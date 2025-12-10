@@ -1,6 +1,6 @@
 from abc import ABC, ABCMeta
 from typing import List
-from ai_server.schemas.tools import ToolArguments
+from ai_server.types.tools import ToolArguments
 from pydantic import BaseModel, Field
 
 class RequireArgClassMeta(ABCMeta):

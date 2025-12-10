@@ -1,6 +1,6 @@
 from ai_server.constants import CACHE
 from ai_server.redis.embedding_cache import RedisEmbeddingsCache
-from ai_server.schemas.message import Message, Role
+from ai_server.types.message import Message, Role
 from ai_server.redis.langchain_vectorizer import LangchainTextVectorizer
 from ai_server.utils.singleton import SingletonMeta
 from ai_server.utils.tracing import async_spanner
@@ -46,6 +46,10 @@ class ConversationMemoryCache(metaclass=SingletonMeta):
     async def delete_cache(self):
         await self.conv_memory_cache.adelete()
 
+    # TODO: needs customisation to adapt to the running summary long term memory
+    # This needs to return response, summary, turns_after_last_summary or change it where its to be called.
+    # Problem - We dont have information of summary or turns_after_last_summary, sending turns_after_last_summary 
+    # as 0 would be an issue as it would corrupt future turns_after_last_summary values and summary generation
     def cache(self, func: Callable) -> Callable:
         @functools.wraps(func)
         async def wrapper(*args, **kwargs) -> List[Message]:

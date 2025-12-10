@@ -1,7 +1,7 @@
 from uuid import uuid4
 import os
 import tiktoken
-from config import BASE_MODEL
+from ai_server.config import BASE_MODEL
 
 # Cached encoder instance
 _tiktoken_encoder: tiktoken.Encoding | None = None

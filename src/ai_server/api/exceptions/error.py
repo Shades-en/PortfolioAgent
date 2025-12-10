@@ -9,5 +9,5 @@ class BaseException(Exception):
     def __str__(self) -> str:
         msg = f"{self.message} - {self.code}"
         if self.note:
-            msg += f" | {self.note}"
+            msg += f"\n\nNote: {self.note}"
         return msg
