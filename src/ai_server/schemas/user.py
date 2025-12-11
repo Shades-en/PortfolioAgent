@@ -9,10 +9,13 @@ from datetime import datetime, timezone
 from pydantic import Field
 from enum import Enum
 
+from opentelemetry.trace import SpanKind
+
 from ai_server.api.exceptions.db_exceptions import (
     UserRetrievalFailedException,
     UserDeletionFailedException
 )
+from ai_server.utils.tracing import trace_operation
 from ai_server.db import MongoDB
 from ai_server.schemas.session import Session
 from ai_server.schemas.message import Message
@@ -68,7 +71,7 @@ class User(Document):
             cookie_id: Cookie ID of the user
             
         Returns:
-            User object if found, None otherwise
+            User object if found, None otherwise        
         """
         if user_id:
             return await cls.get_by_id(user_id)
@@ -103,6 +106,7 @@ class User(Document):
             return await cls.delete_by_cookie_id(cookie_id, cascade=cascade)
     
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL)
     async def delete_by_cookie_id(cls, cookie_id: str, cascade: bool = True) -> dict:
         """
         Delete a user by cookie ID and optionally cascade delete all related sessions.
@@ -122,6 +126,8 @@ class User(Document):
             
         Raises:
             UserDeletionFailedException: If deletion fails
+        
+        Traced as INTERNAL span for database transaction.
         """
         try:
             user = await cls.get_by_cookie_id(cookie_id)
@@ -143,6 +149,7 @@ class User(Document):
             )
     
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL)
     async def delete_by_id(cls, user_id: str, cascade: bool = True) -> dict:
         """
         Delete a user by ID and optionally cascade delete all related sessions.
@@ -162,6 +169,8 @@ class User(Document):
             
         Raises:
             UserDeletionFailedException: If deletion fails
+        
+        Traced as INTERNAL span for database transaction.
         """
         try:
             user = await cls.get_by_id(user_id)
@@ -183,6 +192,7 @@ class User(Document):
             )
     
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL)
     async def _delete_user_with_sessions(cls, user: User, cascade: bool) -> dict:
         """
         Internal helper to delete user and optionally cascade delete sessions.
@@ -193,6 +203,8 @@ class User(Document):
             
         Returns:
             Dictionary with deletion counts
+        
+        Traced as INTERNAL span for database transaction with cascade delete.
         """
         client = MongoDB.get_client()
         

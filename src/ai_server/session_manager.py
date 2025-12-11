@@ -2,11 +2,14 @@ import asyncio
 from typing import List, Tuple
 from pydantic import ValidationError
 
+from opentelemetry.trace import SpanKind
+
 from ai_server.types.state import State
 from ai_server.types.message import MessageDTO, FunctionCallRequest
 from ai_server.schemas import User, Session, Turn, Summary, Role
 from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
+from ai_server.utils.tracing import trace_method, track_state_change
 
 
 class SessionManager():
@@ -46,7 +49,7 @@ class SessionManager():
             user_defined_state=state
         )
         return state
-
+    
     async def _fetch_user_or_session(self) -> None:
         """
         Fetch user or session based on new_user and new_chat flags.
@@ -54,6 +57,7 @@ class SessionManager():
         - new_user=False, new_chat=True  -> Fetch user only
         - new_user=False, new_chat=False -> Fetch session only
         - new_user=True -> Do nothing (new user, no data to fetch)
+        
         """
         if self.state.new_user:
             # New user - nothing to fetch
@@ -67,6 +71,12 @@ class SessionManager():
             if self.session_id:
                 self.session = await Session.get_by_id(self.session_id)
 
+    @trace_method(
+        kind=SpanKind.INTERNAL,
+        graph_node_id="fetch_context",
+        capture_input=False,
+        capture_output=False
+    )
     async def _fetch_context(self) -> Tuple[List[Turn], Summary | None]:
         """
         Fetch the latest N turns and the latest summary in parallel.
@@ -74,6 +84,8 @@ class SessionManager():
         Returns:
             Tuple of (turns, summary) where turns is a list of Turn objects
             and summary is the latest Summary or None.
+        
+        Traced as INTERNAL span for database fetch operations.
         """
         if not self.state.new_chat:
             return [], None
@@ -91,12 +103,18 @@ class SessionManager():
         """
         Update state with provided key-value pairs.
         
+        Automatically tracks state changes in the current span for observability.
+        
         Args:
             **kwargs: Key-value pairs to update in state.
         """
         for key, value in kwargs.items():
             if hasattr(self.state, key):
+                old_value = getattr(self.state, key)
                 setattr(self.state, key, value)
+                
+                # Track state change in current span
+                track_state_change(key, old_value, value)
 
     def _parse_message_dict_to_message(self, message_dict: dict) -> MessageDTO:
         """
@@ -146,6 +164,12 @@ class SessionManager():
                 messages.append(self._parse_message_dict_to_message(msg_dict))
         return messages
 
+    @trace_method(
+        kind=SpanKind.INTERNAL,
+        graph_node_id="session_context_loader",
+        capture_input=False,
+        capture_output=False
+    )
     async def get_context_and_update_state(self) -> Tuple[List[MessageDTO], Summary | None]:
         """
         Fetch context (turns + summary) and user/session in parallel, then update state.
@@ -158,6 +182,8 @@ class SessionManager():
         
         Returns:
             Tuple of (messages, summary) - messages from selected turns in order of arrival.
+        
+        Traced as INTERNAL span for database/session operations.
         """
         # Fetch context and user/session in parallel
         context_task = self._fetch_context()
@@ -230,6 +256,12 @@ class SessionManager():
         # Return list with user message and error response
         return [user_query_dto, error_message_dto]
 
+    @trace_method(
+        kind=SpanKind.INTERNAL,
+        graph_node_id="session_updater",
+        capture_input=False,
+        capture_output=False
+    )
     async def update_user_session(
         self, 
         messages: List[MessageDTO], 

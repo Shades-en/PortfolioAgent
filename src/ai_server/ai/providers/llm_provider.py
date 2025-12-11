@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict
 
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+from ai_server.utils.tracing import trace_method
 from ai_server.types.message import MessageDTO, FunctionCallRequest
 from ai_server.ai.tools.tools import Tool
 from ai_server.config import BASE_MODEL
@@ -25,16 +27,32 @@ class LLMProvider(ABC):
         pass
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.TOOL,
+        graph_node_id="tool_handler",
+        capture_input=False,
+        capture_output=False
+    )
     @abstractmethod
     async def _handle_ai_messages_and_tool_calls(
         cls, 
         response: any, 
         tools: List[Tool],
     ) -> List[MessageDTO]:
-        """Handle AI response and tool calls. Implemented by subclasses."""
+        """
+        Handle AI response and tool calls. Implemented by subclasses.
+        
+        Traced as TOOL span for tool call handling and execution.
+        """
         pass
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.LLM,
+        graph_node_id="llm_generate_response",
+        capture_input=False,
+        capture_output=False
+    )
     @abstractmethod
     async def generate_response(
         cls, 
@@ -43,10 +61,20 @@ class LLMProvider(ABC):
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL
     ) -> tuple[List[MessageDTO], bool]:
-        """Generate a response from the LLM."""
+        """
+        Generate a response from the LLM.
+        
+        Traced as LLM span for response generation with optional tool calls.
+        """
         pass
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.LLM,
+        graph_node_id="llm_generate_summary",
+        capture_input=False,
+        capture_output=False
+    )
     @abstractmethod
     async def generate_summary_or_chat_name(
         cls, 
@@ -62,6 +90,8 @@ class LLMProvider(ABC):
         """
         Generate a summary and/or chat name based on conversation state.
         Returns tuple of (summary, chat_name) where either can be None.
+        
+        Traced as LLM span for summary/chat name generation.
         """
         pass
 

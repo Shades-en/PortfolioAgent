@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from bson.errors import InvalidId
 
 from ai_server.api.services import MessageService
 
@@ -18,4 +19,7 @@ async def delete_message(message_id: str) -> dict:
         - message_deleted: Whether the message was deleted (true/false)
         - turns_updated: Number of turns updated (0 or 1)
     """
-    return await MessageService.delete_message(message_id=message_id)
+    try:
+        return await MessageService.delete_message(message_id=message_id)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail=f"Invalid message ID format: {message_id}")

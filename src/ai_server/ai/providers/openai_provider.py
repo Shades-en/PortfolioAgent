@@ -111,7 +111,7 @@ class OpenAIProvider(LLMProvider, ABC):
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL
     ) -> tuple[List[MessageDTO], bool]:
-        """Generate a response from the LLM."""
+        """Generate a response from the LLM. Tracing inherited from parent class."""
         tool_call = False
         input_messages = list(map(cls._convert_to_openai_compatible_messages, conversation_history))
         response = await cls._call_llm(

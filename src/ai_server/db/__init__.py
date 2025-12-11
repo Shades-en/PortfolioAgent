@@ -2,8 +2,10 @@ import os
 from typing import List, Type
 from beanie import init_beanie, Document
 from pymongo import AsyncMongoClient
+from opentelemetry.trace import SpanKind
 
 from ai_server.schemas import User, Session, Summary, Turn, Message
+from ai_server.utils.tracing import trace_operation
 
 # All document models to register with Beanie
 DOCUMENT_MODELS: List[Type[Document]] = [
@@ -22,6 +24,11 @@ class MongoDB:
     _initialized: bool = False
     
     @classmethod
+    @trace_operation(
+        kind=SpanKind.INTERNAL,
+        capture_input=False,
+        capture_output=False
+    )
     async def init(
         cls,
         db_name: str | None = None,
@@ -35,6 +42,9 @@ class MongoDB:
             db_name: Database name (defaults to MONGO_DB_NAME env var)
             srv_uri: Full MongoDB SRV URI (defaults to MONGO_SRV_URI env var)
             allow_index_dropping: Whether to allow dropping indexes on init
+        
+        Traced as INTERNAL span. Input/output not captured for security
+        (connection strings contain sensitive credentials).
         """
         if cls._initialized:
             return
@@ -68,8 +78,17 @@ class MongoDB:
         cls._initialized = True
     
     @classmethod
+    @trace_operation(
+        kind=SpanKind.INTERNAL,
+        capture_input=False,
+        capture_output=False
+    )
     async def close(cls) -> None:
-        """Close the MongoDB connection."""
+        """
+        Close the MongoDB connection.
+        
+        Traced as INTERNAL span. Input/output not captured for security.
+        """
         if cls._client:
             cls._client.close()
             cls._client = None

@@ -1,4 +1,4 @@
-from ai_server.api.exceptions.base_exception import BaseException
+from ai_server.api.exceptions.error import BaseException
 
 
 class MaxStepsReachedException(BaseException):
@@ -11,10 +11,11 @@ class MaxStepsReachedException(BaseException):
         current_step: int | None = None,
         max_steps: int | None = None,
     ):
-        details = {}
+        # Build note with step details
+        full_note = note or ""
         if current_step is not None:
-            details["current_step"] = current_step
+            full_note += f" Current step: {current_step}."
         if max_steps is not None:
-            details["max_steps"] = max_steps
+            full_note += f" Max steps: {max_steps}."
         
-        super().__init__(message=message, note=note, details=details)
+        super().__init__(message=message, note=full_note.strip(), code='AGENT-01', status_code=500)

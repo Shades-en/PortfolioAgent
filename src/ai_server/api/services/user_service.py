@@ -1,7 +1,11 @@
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+
 from ai_server.schemas import User
+from ai_server.utils.tracing import trace_operation
 
 
 class UserService:
+    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
     async def get_user(cls, user_id: str | None = None, cookie_id: str | None = None) -> User | None:
         """
@@ -16,12 +20,15 @@ class UserService:
             
         Raises:
             ValueError: If neither user_id nor cookie_id is provided
+        
+        Traced as CHAIN span for service-level orchestration.
         """
         if not user_id and not cookie_id:
             raise ValueError("Either user_id or cookie_id must be provided")
         
         return await User.get_by_id_or_cookie(user_id=user_id, cookie_id=cookie_id)
     
+    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
     async def delete_user(
         cls, 
@@ -48,6 +55,8 @@ class UserService:
             
         Raises:
             ValueError: If neither user_id nor cookie_id is provided
+        
+        Traced as CHAIN span for service-level orchestration.
         """
         if not user_id and not cookie_id:
             raise ValueError("Either user_id or cookie_id must be provided")

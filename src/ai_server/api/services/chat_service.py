@@ -4,12 +4,16 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues
 
 from ai_server.ai.runner import Runner
 from ai_server.ai.agents.agent import AboutMeAgent
-from ai_server.session_manager import SessionManager
 from ai_server.ai.tools.tools import GetWeather, GetHoroscope
-from ai_server.utils.tracing import trace_classmethod
+
+from ai_server.session_manager import SessionManager
+from ai_server.utils.tracing import trace_method
 
 class ChatService:
-    @trace_classmethod(kind=OpenInferenceSpanKindValues.CHAIN)
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.CHAIN,
+        graph_node_id="chat_service"
+    )
     @classmethod
     async def chat(
         cls, 
@@ -24,7 +28,10 @@ class ChatService:
         """
         Handle a chat request by orchestrating session management, agent creation, and query execution.
         
-        This method is automatically traced as a CHAIN span with context extracted from arguments.
+        Tracing context is set by endpoint. This method is traced as a CHAIN span
+        representing the service-level workflow orchestration.
+        
+        Graph node: chat_service (parent inferred from span hierarchy)
         """
         # Initialize session manager with user context
         session_manager = SessionManager(

@@ -9,6 +9,9 @@ from pydantic import Field
 from typing import List, TYPE_CHECKING
 import asyncio
 
+from opentelemetry.trace import SpanKind
+from ai_server.utils.tracing import trace_method, trace_operation
+
 if TYPE_CHECKING:
     from pymongo.client_session import ClientSession
     from ai_server.schemas.message import Message
@@ -51,6 +54,12 @@ class Session(Document):
             )
     
     @classmethod
+    @trace_method(
+        kind=SpanKind.INTERNAL,
+        graph_node_id="db_create_session_with_user",
+        capture_input=False,
+        capture_output=False
+    )
     async def create_with_user(
         cls,
         cookie_id: str,
@@ -68,6 +77,8 @@ class Session(Document):
             
         Raises:
             SessionCreationFailedException: If transaction fails
+        
+        Traced as INTERNAL span for database transaction.
         """
         client = MongoDB.get_client()
         
@@ -160,6 +171,7 @@ class Session(Document):
             )
     
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL)
     async def delete_with_related(cls, session_id: str) -> dict:
         """
         Delete session and all related documents (messages, turns, summaries) in a transaction.
@@ -178,6 +190,8 @@ class Session(Document):
         
         Raises:
             SessionDeletionFailedException: If deletion fails
+        
+        Traced as INTERNAL span for database transaction with cascade delete.
         """
         from ai_server.schemas.message import Message
         from ai_server.schemas.turn import Turn
@@ -336,6 +350,12 @@ class Session(Document):
                 note=f"session_id={self.id}, turn_number={turn_number}, message_count={len(message_docs)}, error={str(e)}"
             )
     
+    @trace_method(
+        kind=SpanKind.INTERNAL,
+        graph_node_id="db_insert_messages_and_turn",
+        capture_input=False,
+        capture_output=False
+    )
     async def insert_messages_and_turn(
         self,
         turn_number: int,
@@ -356,6 +376,8 @@ class Session(Document):
         Raises:
             MessageCreationFailedException: If message insertion fails
             TurnCreationFailedException: If turn creation fails
+        
+        Traced as INTERNAL span for database transaction.
         """
         if not self.id:
             raise TurnCreationFailedException(

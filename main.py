@@ -12,10 +12,10 @@ from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 from openinference.instrumentation.langchain import LangChainInstrumentor
 
-from ai_server.utils.logger import setup_logging
-from ai_server.config import BASE_PATH, HOST, PORT, RELOAD, WORKERS
-from ai_server import BaseException, chat_router
-from ai_server.api.startup import lifespan
+from ai_server import (
+    BaseException, router, lifespan, GenericTracingMiddleware,
+    setup_logging, BASE_PATH, HOST, PORT, RELOAD, WORKERS
+)
 
 load_dotenv()
 
@@ -38,6 +38,9 @@ app = FastAPI(
 )
 
 # Set up middlewares
+app.add_middleware(GenericTracingMiddleware)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,11 +49,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat_router)
+app.include_router(router)
 
 @app.exception_handler(BaseException)
 def exception_handler(request, exc):
-    return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+    # Handle exceptions with status_code attribute (custom exceptions)
+    status_code = getattr(exc, 'status_code', 500)
+    return JSONResponse(status_code=status_code, content={"detail": str(exc)})
 
 openapi_schema = get_openapi(
     title='Portfolio AI Server',

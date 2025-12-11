@@ -10,7 +10,10 @@ from enum import Enum
 from datetime import datetime, timezone
 import asyncio
 
+from opentelemetry.trace import SpanKind
+
 from ai_server.utils.general import get_token_count
+from ai_server.utils.tracing import trace_operation
 from ai_server.api.exceptions.db_exceptions import (
     MessageRetrievalFailedException,
     MessageDeletionFailedException
@@ -127,6 +130,7 @@ class Message(Document):
             )
     
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL)
     async def delete_by_id(cls, message_id: str) -> dict:
         """
         Delete a message by its ID and remove its reference from any Turn.
@@ -143,6 +147,8 @@ class Message(Document):
             
         Raises:
             MessageDeletionFailedException: If deletion fails
+        
+        Traced as INTERNAL span for database transaction.
         """
         from ai_server.schemas.turn import Turn
         

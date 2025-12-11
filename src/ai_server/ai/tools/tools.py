@@ -1,7 +1,12 @@
-from abc import ABC, ABCMeta
-from typing import List
-from ai_server.types.tools import ToolArguments
+from abc import ABC, ABCMeta, abstractmethod
+from typing import List, Any
 from pydantic import BaseModel, Field
+
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+
+from ai_server.utils.tracing import trace_method
+from ai_server.types.tools import ToolArguments
+
 
 class RequireArgClassMeta(ABCMeta):
     def __new__(mcs, name, bases, namespace):
@@ -32,6 +37,22 @@ class Tool(ABC, metaclass=RequireArgClassMeta):
                 type=property_schema["type"],
             ))
         return args
+
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.TOOL,
+        graph_node_id=lambda self: f"tool_{self.name}",
+        capture_input=True,
+        capture_output=True
+    )
+    @abstractmethod
+    async def __call__(self, arguments: Arguments) -> Any:
+        """
+        Execute the tool with given arguments.
+        
+        Traced as TOOL span with dynamic node ID based on tool name.
+        Captures input arguments and output result for debugging.
+        """
+        pass
 
 class GetWeather(Tool):
     def __init__(self) -> None:

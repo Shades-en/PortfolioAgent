@@ -1,10 +1,14 @@
 from typing import List
 
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+
 from ai_server.schemas import Session, Message
 from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE
+from ai_server.utils.tracing import trace_operation
 
 
 class SessionService:
+    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
     async def get_session_messages(
         cls,
@@ -23,6 +27,8 @@ class SessionService:
             
         Returns:
             List of message dictionaries in chronological order
+        
+        Traced as CHAIN span for service-level orchestration.
         """
         messages = await Message.get_paginated_by_session(
             session_id=session_id,
@@ -31,6 +37,7 @@ class SessionService:
         )
         return [msg.model_dump() for msg in messages]
     
+    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
     async def get_all_session_messages(cls, session_id: str) -> List[dict]:
         """
@@ -41,10 +48,13 @@ class SessionService:
             
         Returns:
             List of all message dictionaries in chronological order
+        
+        Traced as CHAIN span for service-level orchestration.
         """
         messages = await Message.get_all_by_session(session_id=session_id)
         return [msg.model_dump() for msg in messages]
     
+    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
     async def get_user_sessions(
         cls,
@@ -62,6 +72,8 @@ class SessionService:
             
         Returns:
             List of session dictionaries sorted by most recent first
+        
+        Traced as CHAIN span for service-level orchestration.
         """
         sessions = await Session.get_paginated_by_user_cookie(
             cookie_id=cookie_id,
@@ -70,6 +82,7 @@ class SessionService:
         )
         return [session.model_dump() for session in sessions]
     
+    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
     async def get_all_user_sessions(cls, cookie_id: str) -> List[dict]:
         """
@@ -80,10 +93,13 @@ class SessionService:
             
         Returns:
             List of all session dictionaries sorted by most recent first
+        
+        Traced as CHAIN span for service-level orchestration.
         """
         sessions = await Session.get_all_by_user_cookie(cookie_id=cookie_id)
         return [session.model_dump() for session in sessions]
     
+    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
     async def delete_session(cls, session_id: str) -> dict:
         """
@@ -99,5 +115,7 @@ class SessionService:
                 "summaries_deleted": int,
                 "session_deleted": bool
             }
+        
+        Traced as CHAIN span for service-level orchestration.
         """
         return await Session.delete_with_related(session_id)
