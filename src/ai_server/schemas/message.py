@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from beanie import Document, Link
 import pymongo
+from bson import ObjectId
 
 from pydantic import BaseModel, Field, model_validator
 from typing import Self, TYPE_CHECKING, List
 from enum import Enum
 from datetime import datetime, timezone
-from bson import ObjectId
+import asyncio
 
 from ai_server.utils.general import get_token_count
-from ai_server.api.exceptions.db_exceptions import MessageRetrievalFailedException
+from ai_server.api.exceptions.db_exceptions import (
+    MessageRetrievalFailedException,
+    MessageDeletionFailedException
+)
 from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE
+from ai_server.db import MongoDB
 
 if TYPE_CHECKING:
     from ai_server.schemas.session import Session
@@ -119,4 +124,63 @@ class Message(Document):
             raise MessageRetrievalFailedException(
                 message="Failed to retrieve all messages for session",
                 note=f"session_id={session_id}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def delete_by_id(cls, message_id: str) -> dict:
+        """
+        Delete a message by its ID and remove its reference from any Turn.
+        Uses a transaction to ensure atomicity.
+        
+        Args:
+            message_id: The message ID to delete
+            
+        Returns:
+            Dictionary with deletion info: {
+                "message_deleted": bool,
+                "turns_updated": int
+            }
+            
+        Raises:
+            MessageDeletionFailedException: If deletion fails
+        """
+        from ai_server.schemas.turn import Turn
+        
+        try:
+            obj_id = ObjectId(message_id)
+            message = await cls.get(obj_id)
+            if not message:
+                return {
+                    "message_deleted": False,
+                    "turns_updated": 0
+                }
+            
+            client = MongoDB.get_client()
+            
+            async with await client.start_session() as session_txn:
+                async with session_txn.start_transaction():
+                    # Delete message and remove from turn in parallel
+                    # Query turn that contains this message in its messages array
+                    message_delete, turn_update = await asyncio.gather(
+                        message.delete(session=session_txn),
+                        Turn.find(
+                            {"messages.$id": obj_id}
+                        ).update(
+                            {"$pull": {"messages.$id": obj_id}},
+                            session=session_txn
+                        )
+                    )
+                    
+                    # turn_update.modified_count tells us if a turn was updated
+                    turns_updated = turn_update.modified_count if turn_update else 0
+                    
+                    return {
+                        "message_deleted": True,
+                        "turns_updated": turns_updated
+                    }
+            
+        except Exception as e:
+            raise MessageDeletionFailedException(
+                message="Failed to delete message by ID",
+                note=f"message_id={message_id}, error={str(e)}"
             ) 

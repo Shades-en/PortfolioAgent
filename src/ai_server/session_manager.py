@@ -230,27 +230,56 @@ class SessionManager():
         # Return list with user message and error response
         return [user_query_dto, error_message_dto]
 
-    async def update_user_session(self, messages: List[MessageDTO], summary: Summary | None) -> None:
-        session = self.session
-        user = self.user
+    async def update_user_session(
+        self, 
+        messages: List[MessageDTO], 
+        summary: Summary | None, 
+        chat_name: str | None
+    ) -> None:
+        # Track if session existed before this method (for parallel name update logic)
+        session_existed = self.session is not None
         
         # Case 1: New user and new session - create both atomically
-        if not session and not user:
-            self.session = await Session.create_with_user(cookie_id=self.user_cookie)        
+        if not self.session and not self.user:
+            if chat_name:
+                self.session = await Session.create_with_user(
+                    cookie_id=self.user_cookie, 
+                    session_name=chat_name
+                )
+            else:
+                self.session = await Session.create_with_user(cookie_id=self.user_cookie)
         # Case 2: Existing user, new session - create session for existing user
-        elif not session and user:
-            self.session = await Session.create_for_existing_user(user=user)
+        elif not self.session and self.user:
+            if chat_name:
+                self.session = await Session.create_for_existing_user(
+                    user=self.user, 
+                    session_name=chat_name
+                )
+            else:
+                self.session = await Session.create_for_existing_user(user=self.user)
         
         # Insert messages and turn for the session
         if self.session:
             turn_number = self.state.turn_number
             try:
-                await self.session.insert_messages_and_turn(
-                    turn_number=turn_number,
-                    messages=messages,
-                    summary=summary
-                )
-            except Exception as e:
+                # Run message/turn insertion and name update in parallel for existing sessions
+                # Scenario: New session with chat_name - It will again try to set it up so only set name when it was originally an existing session
+                if session_existed and chat_name:
+                    await asyncio.gather(
+                        self.session.insert_messages_and_turn(
+                            turn_number=turn_number,
+                            messages=messages,
+                            summary=summary
+                        ),
+                        self.session.update_name(chat_name)
+                    )
+                else:
+                    await self.session.insert_messages_and_turn(
+                        turn_number=turn_number,
+                        messages=messages,
+                        summary=summary
+                    )
+            except Exception:
                 # If insertion fails, still save user message and error response
                 if not messages:
                     return

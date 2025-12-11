@@ -7,6 +7,7 @@ from bson import ObjectId
 from datetime import datetime, timezone
 from pydantic import Field
 from typing import List, TYPE_CHECKING
+import asyncio
 
 if TYPE_CHECKING:
     from pymongo.client_session import ClientSession
@@ -19,6 +20,8 @@ from ai_server.types.message import MessageDTO
 from ai_server.api.exceptions.db_exceptions import (
     SessionRetrievalFailedException,
     SessionCreationFailedException,
+    SessionUpdateFailedException,
+    SessionDeletionFailedException,
     MessageCreationFailedException,
     TurnCreationFailedException
 )
@@ -128,6 +131,96 @@ class Session(Document):
             raise SessionCreationFailedException(
                 message="Failed to create session for existing user",
                 note=f"user_id={user.id}, session_name={session_name}, error={str(e)}"
+            )
+    
+    async def update_name(self, new_name: str) -> None:
+        """
+        Update the session name.
+        
+        Args:
+            new_name: New name for the session
+            
+        Raises:
+            SessionUpdateFailedException: If update fails
+        """
+        if not self.id:
+            raise SessionUpdateFailedException(
+                message="Cannot update name for unsaved session",
+                note="Session must be saved to database before updating name"
+            )
+        
+        try:
+            self.name = new_name
+            await self.save()
+            
+        except Exception as e:
+            raise SessionUpdateFailedException(
+                message="Failed to update session name",
+                note=f"session_id={self.id}, new_name={new_name}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def delete_with_related(cls, session_id: str) -> dict:
+        """
+        Delete session and all related documents (messages, turns, summaries) in a transaction.
+        This prevents orphaned documents with dangling references.
+        
+        Args:
+            session_id: MongoDB document ID of the session to delete
+        
+        Returns:
+            Dictionary with deletion counts: {
+                "messages_deleted": int, 
+                "turns_deleted": int, 
+                "summaries_deleted": int,
+                "session_deleted": bool
+            }
+        
+        Raises:
+            SessionDeletionFailedException: If deletion fails
+        """
+        from ai_server.schemas.message import Message
+        from ai_server.schemas.turn import Turn
+        from ai_server.schemas.summary import Summary
+        
+        try:
+            obj_id = ObjectId(session_id)
+            session = await cls.get(obj_id)
+            if not session:
+                return {
+                    "messages_deleted": 0,
+                    "turns_deleted": 0,
+                    "summaries_deleted": 0,
+                    "session_deleted": False
+                }
+            
+            client = MongoDB.get_client()
+            
+            async with await client.start_session() as session_txn:
+                async with session_txn.start_transaction():
+                    # Delete session, messages, turns, and summaries in parallel
+                    delete_results = await asyncio.gather(
+                        session.delete(session=session_txn),
+                        Message.find(Message.session.id == obj_id).delete(session=session_txn),
+                        Turn.find(Turn.session.id == obj_id).delete(session=session_txn),
+                        Summary.find(Summary.session.id == obj_id).delete(session=session_txn)
+                    )
+                    
+                    messages_deleted = delete_results[1].deleted_count if delete_results[1] else 0
+                    turns_deleted = delete_results[2].deleted_count if delete_results[2] else 0
+                    summaries_deleted = delete_results[3].deleted_count if delete_results[3] else 0
+                    
+                    return {
+                        "messages_deleted": messages_deleted,
+                        "turns_deleted": turns_deleted,
+                        "summaries_deleted": summaries_deleted,
+                        "session_deleted": True
+                    }
+                    
+        except Exception as e:
+            raise SessionDeletionFailedException(
+                message="Failed to delete session with related documents",
+                note=f"session_id={session_id}, error={str(e)}"
             )
     
     async def insert_messages(

@@ -36,9 +36,34 @@ def get_token_count(text: str) -> int:
         _tiktoken_encoder = tiktoken.encoding_for_model(BASE_MODEL)
     return len(_tiktoken_encoder.encode(text))
 
+def safe_get_arg(args: tuple, index: int, default=None):
+    """
+    Safely extract an argument from args tuple by index.
+    
+    Args:
+        args: Tuple of arguments
+        index: Index to extract
+        default: Default value if index is out of bounds
+    
+    Returns:
+        Value at index or default
+    
+    Example:
+        >>> args = ("hello", "world", 123)
+        >>> safe_get_arg(args, 0)
+        'hello'
+        >>> safe_get_arg(args, 5, "default")
+        'default'
+    """
+    try:
+        return args[index] if index < len(args) else default
+    except (IndexError, TypeError):
+        return default
+
 __all__ = [
     "generate_id", 
     "get_env_int", 
     "_env_flag",
     "get_token_count",
+    "safe_get_arg",
 ]

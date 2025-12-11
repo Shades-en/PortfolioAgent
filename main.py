@@ -8,6 +8,9 @@ import os
 
 from arize.otel import register
 from openinference.instrumentation.openai import OpenAIInstrumentor
+from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+from openinference.instrumentation.langchain import LangChainInstrumentor
 
 from ai_server.utils.logger import setup_logging
 from ai_server.config import BASE_PATH, HOST, PORT, RELOAD, WORKERS
@@ -25,6 +28,9 @@ tracer_provider = register(
 )
 
 OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+PymongoInstrumentor().instrument(tracer_provider=tracer_provider)
+RedisInstrumentor().instrument(tracer_provider=tracer_provider)
+LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
 app = FastAPI(
     root_path=BASE_PATH,

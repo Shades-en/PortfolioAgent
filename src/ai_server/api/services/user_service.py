@@ -21,3 +21,39 @@ class UserService:
             raise ValueError("Either user_id or cookie_id must be provided")
         
         return await User.get_by_id_or_cookie(user_id=user_id, cookie_id=cookie_id)
+    
+    @classmethod
+    async def delete_user(
+        cls, 
+        user_id: str | None = None, 
+        cookie_id: str | None = None,
+        cascade: bool = True
+    ) -> dict:
+        """
+        Delete a user by their ID or cookie ID and optionally cascade delete all related data.
+        
+        Args:
+            user_id: MongoDB document ID of the user (optional)
+            cookie_id: Cookie ID of the user (optional)
+            cascade: If True, also delete all sessions (and their messages/turns/summaries)
+            
+        Returns:
+            Dictionary with deletion counts: {
+                "user_deleted": bool,
+                "sessions_deleted": int,
+                "messages_deleted": int,
+                "turns_deleted": int,
+                "summaries_deleted": int
+            }
+            
+        Raises:
+            ValueError: If neither user_id nor cookie_id is provided
+        """
+        if not user_id and not cookie_id:
+            raise ValueError("Either user_id or cookie_id must be provided")
+        
+        return await User.delete_by_id_or_cookie(
+            user_id=user_id, 
+            cookie_id=cookie_id, 
+            cascade=cascade
+        )

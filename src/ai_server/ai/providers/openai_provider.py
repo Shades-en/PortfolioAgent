@@ -5,11 +5,13 @@ from ai_server.ai.providers.llm_provider import LLMProvider
 from ai_server.ai.providers.embedding_provider import EmbeddingProvider
 from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
+from ai_server.ai.prompts.chat_name import CHAT_NAME_SYSTEM_PROMPT, CHAT_NAME_USER_PROMPT
 
 from ai_server.types.message import MessageDTO, Role, FunctionCallRequest
 from ai_server.utils.general import get_env_int, get_token_count
 from ai_server.config import BASE_MODEL, BASE_EMBEDDING_MODEL
 from ai_server.constants import OPENAI
+import ai_server.config as config
 
 import asyncio
 import json
@@ -40,6 +42,30 @@ class OpenAIProvider(LLMProvider, ABC):
         if cls.async_client is None:
             cls.async_client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         return cls.async_client
+    
+    @classmethod
+    def _extract_text_from_response(cls, response: Response | ChatCompletion) -> str:
+        """
+        Extract text content from OpenAI API response.
+        Handles both Responses API and Chat Completion API response types.
+        
+        Args:
+            response: Response from OpenAI API (_call_llm)
+            
+        Returns:
+            Extracted text content as string
+            
+        Raises:
+            ValueError: If response type is not recognized
+        """
+        if isinstance(response, Response):
+            # OpenAI Responses API
+            return response.output_text.strip()
+        elif isinstance(response, ChatCompletion):
+            # OpenAI Chat Completion API
+            return response.choices[0].message.content.strip()
+        else:
+            raise ValueError(f"Unexpected response type: {type(response)}")
 
     @classmethod
     @abstractmethod
@@ -130,10 +156,10 @@ class OpenAIProvider(LLMProvider, ABC):
             instructions=CONVERSATION_SUMMARY_PROMPT,
             temperature=0.3,  # Lower temperature for more consistent summaries
         )
-        return response.output_text
+        return cls._extract_text_from_response(response)
 
     @classmethod
-    async def generate_summary(
+    async def generate_summary_or_chat_name(
         cls, 
         conversation_to_summarize: List[MessageDTO], 
         previous_summary: str | None, 
@@ -141,10 +167,20 @@ class OpenAIProvider(LLMProvider, ABC):
         turns_after_last_summary: int,
         context_token_count: int,
         tool_call: bool = False,
-        new_chat: bool = False
-    ) -> str | None:
+        new_chat: bool = False,
+        turn_number: int = 1,
+    ) -> tuple[str | None, str | None]:
         """
-        Generate a new summary if token threshold or turn limit is exceeded.
+        Generate a summary and/or chat name based on conversation state.
+        
+        Summary generation:
+        - Triggered when token threshold or turn limit is exceeded
+        - Only for non-tool-call, non-new-chat scenarios
+        
+        Chat name generation:
+        - For new chats: Generate immediately using just the query
+        - For existing chats: Generate every N turns (TURNS_BETWEEN_CHAT_NAME) using query and summary
+        - Never generated during tool calls
         
         Args:
             conversation_to_summarize: Messages to summarize
@@ -152,11 +188,17 @@ class OpenAIProvider(LLMProvider, ABC):
             query: Current user query
             turns_after_last_summary: Number of turns since last summary
             context_token_count: Current context token count
-            pure_user_query: Whether the query is from the user
+            tool_call: Whether this is a tool call (skips both summary and chat name)
+            new_chat: Whether this is a new chat (generates chat name immediately)
+            turn_number: Current turn number (for periodic chat name generation)
             
         Returns:
-            New summary string if summarization triggered, None otherwise
+            Tuple of (summary, chat_name) where either can be None
         """
+        summary: str | None = None
+        chat_name: str | None = None
+        
+        # Generate summary if threshold exceeded (not for tool calls or new chats)
         if not tool_call and not new_chat:
             query_tokens = get_token_count(query)
             should_summarize = (
@@ -164,8 +206,72 @@ class OpenAIProvider(LLMProvider, ABC):
                 (turns_after_last_summary >= MAX_TURNS_TO_FETCH)
             )
             if should_summarize:
-                return await cls._summarise(conversation_to_summarize, previous_summary)
-        return None
+                summary = await cls._summarise(conversation_to_summarize, previous_summary)
+        
+        # Generate chat name (not during tool calls)
+        if not tool_call:
+            if new_chat:
+                # New chat: generate name from query only
+                chat_name = await cls._generate_chat_name(query)
+            elif turn_number % config.TURNS_BETWEEN_CHAT_NAME == 0:
+                # Existing chat: generate name periodically with context
+                chat_name = await cls._generate_chat_name(query, previous_summary)
+        
+        return summary, chat_name
+    
+    @classmethod
+    async def _generate_chat_name(
+        cls,
+        query: str,
+        previous_summary: str | None = None
+    ) -> str:
+        """
+        Generate a meaningful, concise chat name based on the query and optional previous summary.
+        
+        Args:
+            query: The user's query
+            previous_summary: Optional previous conversation summary for context
+            
+        Returns:
+            A concise chat name (respects MAX_CHAT_NAME_LENGTH and MAX_CHAT_NAME_WORDS config)
+        """
+        context = f"Previous context: {previous_summary}\n\n" if previous_summary else ""
+        user_prompt = CHAT_NAME_USER_PROMPT.format(
+            context=context, 
+            query=query,
+            max_words=config.MAX_CHAT_NAME_WORDS
+        )
+
+        try:
+            # Build messages for _call_llm
+            input_messages = [
+                {"role": "system", "content": CHAT_NAME_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ]
+            
+            response = await cls._call_llm(
+                input_messages=input_messages,
+                model=config.BASE_MODEL,
+                temperature=0.7
+            )
+            
+            # Extract text from response
+            chat_name = cls._extract_text_from_response(response)
+            
+            # Ensure it's not too long
+            max_length = config.MAX_CHAT_NAME_LENGTH
+            if len(chat_name) > max_length:
+                chat_name = chat_name[:max_length - 3] + "..."
+            
+            return chat_name
+            
+        except Exception:
+            # Fallback: use first few words of query
+            max_words = config.MAX_CHAT_NAME_WORDS
+            words = query.split()[:max_words]
+            fallback_name = " ".join(words)
+            max_length = config.MAX_CHAT_NAME_LENGTH
+            return fallback_name[:max_length] if len(fallback_name) <= max_length else fallback_name[:max_length - 3] + "..."
 
     @classmethod
     def build_system_message(

@@ -37,6 +37,9 @@ MAX_STEPS = 10
 
 # Session Configuration
 DEFAULT_SESSION_NAME = os.getenv("DEFAULT_SESSION_NAME", "New Chat")
+TURNS_BETWEEN_CHAT_NAME = int(os.getenv("TURNS_BETWEEN_CHAT_NAME", 10))
+MAX_CHAT_NAME_LENGTH = int(os.getenv("MAX_CHAT_NAME_LENGTH", 50))
+MAX_CHAT_NAME_WORDS = int(os.getenv("MAX_CHAT_NAME_WORDS", 5))
 
 # Pagination Configuration
 DEFAULT_MESSAGE_PAGE_SIZE = int(os.getenv("DEFAULT_MESSAGE_PAGE_SIZE", 50))

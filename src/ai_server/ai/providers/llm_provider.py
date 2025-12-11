@@ -48,7 +48,7 @@ class LLMProvider(ABC):
 
     @classmethod
     @abstractmethod
-    async def generate_summary(
+    async def generate_summary_or_chat_name(
         cls, 
         conversation_to_summarize: List[MessageDTO], 
         previous_summary: str | None, 
@@ -56,9 +56,13 @@ class LLMProvider(ABC):
         turns_after_last_summary: int,
         context_token_count: int,
         tool_call: bool = False,
-        new_chat: bool = False
-    ) -> str | None:
-        """Generate a new summary if token threshold or turn limit is exceeded."""
+        new_chat: bool = False,
+        turn_number: int = 1,
+    ) -> tuple[str | None, str | None]:
+        """
+        Generate a summary and/or chat name based on conversation state.
+        Returns tuple of (summary, chat_name) where either can be None.
+        """
         pass
 
     @classmethod

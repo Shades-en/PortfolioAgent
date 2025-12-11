@@ -20,8 +20,11 @@ dependencies = [
     { name = "langchain" },
     { name = "langchain-openai" },
     { name = "openai" },
+    { name = "openinference-instrumentation-langchain" },
     { name = "openinference-instrumentation-openai" },
     { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-instrumentation-pymongo" },
+    { name = "opentelemetry-instrumentation-redis" },
     { name = "pylint" },
     { name = "redis" },
     { name = "redisvl" },
@@ -39,8 +42,11 @@ requires-dist = [
     { name = "langchain", specifier = ">=0.3.27" },
     { name = "langchain-openai", specifier = ">=0.3.29" },
     { name = "openai", specifier = ">=1.99.1" },
+    { name = "openinference-instrumentation-langchain", specifier = ">=0.1.56" },
     { name = "openinference-instrumentation-openai", specifier = ">=0.1.39" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.37.0" },
+    { name = "opentelemetry-instrumentation-pymongo", specifier = ">=0.58b0" },
+    { name = "opentelemetry-instrumentation-redis", specifier = ">=0.58b0" },
     { name = "pylint", specifier = ">=3.3.8" },
     { name = "redis", specifier = ">=6.3.0" },
     { name = "redisvl", specifier = ">=0.8.0" },
@@ -828,6 +834,23 @@ wheels = [
 ]
 
 [[package]]
+name = "openinference-instrumentation-langchain"
+version = "0.1.56"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/4d/f63ccd6f2e272de5015388cf633cdbb5163ed119c2ac8df4cd19c3f38ba6/openinference_instrumentation_langchain-0.1.56.tar.gz", hash = "sha256:19fcf552096c53e1b289d0225a372890ca909ef79fba471a395220912fc5e0e7", size = 72264, upload_time = "2025-12-04T19:58:39.814Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/93/4f2d40640ec567cf96831c5303f43a84177a8781d4e125b68485407bc364/openinference_instrumentation_langchain-0.1.56-py3-none-any.whl", hash = "sha256:1de2bbe9780dae5e45308bd3dd97a38ac218b618a9cce4c96fc9e8c762c3491d", size = 23261, upload_time = "2025-12-04T19:58:35.98Z" },
+]
+
+[[package]]
 name = "openinference-instrumentation-openai"
 version = "0.1.39"
 source = { registry = "https://pypi.org/simple" }
@@ -941,6 +964,35 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f6/36/7c307d9be8ce4ee7beb86d7f1d31027f2a6a89228240405a858d6e4d64f9/opentelemetry_instrumentation-0.58b0.tar.gz", hash = "sha256:df640f3ac715a3e05af145c18f527f4422c6ab6c467e40bd24d2ad75a00cb705", size = 31549, upload_time = "2025-09-11T11:42:14.084Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d4/db/5ff1cd6c5ca1d12ecf1b73be16fbb2a8af2114ee46d4b0e6d4b23f4f4db7/opentelemetry_instrumentation-0.58b0-py3-none-any.whl", hash = "sha256:50f97ac03100676c9f7fc28197f8240c7290ca1baa12da8bfbb9a1de4f34cc45", size = 33019, upload_time = "2025-09-11T11:41:00.624Z" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-pymongo"
+version = "0.58b0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/22/1f/2a3c5b9c570ae6edcfb1fd5ffc6bb5b5a4c97d2cece87ef88d1c2613f2db/opentelemetry_instrumentation_pymongo-0.58b0.tar.gz", hash = "sha256:a68718eaec23cab7da4344c1459e99ff3daf8797954b0378c133cf7ce2f79381", size = 9863, upload_time = "2025-09-11T11:42:45.865Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/80/9a/2820d31cb2aefec45ee9030469491ceec19798faa8d8551cd45327881c46/opentelemetry_instrumentation_pymongo-0.58b0-py3-none-any.whl", hash = "sha256:b982d6177d16e618b04536774f4e15ef38d93e4ce1ed3317de9cfd3ac2d5be1d", size = 11339, upload_time = "2025-09-11T11:41:44.65Z" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-redis"
+version = "0.58b0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/1a/780a4db764edf90299dd80ef5846e9ab27870236e5152eacf43e523eac0e/opentelemetry_instrumentation_redis-0.58b0.tar.gz", hash = "sha256:6271f10a9ee0572f1c67f630b098326a4fe02b898c46a173942766c00307914a", size = 13971, upload_time = "2025-09-11T11:42:49.633Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/c0/2a1d5a6950823369f11c19793ed79e882a8b7402de50b890f86541907245/opentelemetry_instrumentation_redis-0.58b0-py3-none-any.whl", hash = "sha256:d58fdf2103e437f927e14606145f7066336aa11429f757783bff2e56e1b99eba", size = 14927, upload_time = "2025-09-11T11:41:50.413Z" },
 ]
 
 [[package]]

@@ -54,3 +54,25 @@ class MessageCreationFailedException(BaseException):
 class SummaryCreationFailedException(BaseException):
     def __init__(self, message: str, note: str):
         super().__init__(message, note, 'DB-I-04', 500)
+
+
+# Update Exceptions (DB-U-XX)
+class SessionUpdateFailedException(BaseException):
+    def __init__(self, message: str, note: str):
+        super().__init__(message, note, 'DB-U-00', 500)
+
+
+# Deletion Exceptions (DB-D-XX)
+class MessageDeletionFailedException(BaseException):
+    def __init__(self, message: str, note: str):
+        super().__init__(message, note, 'DB-D-00', 500)
+
+
+class SessionDeletionFailedException(BaseException):
+    def __init__(self, message: str, note: str):
+        super().__init__(message, note, 'DB-D-01', 500)
+
+
+class UserDeletionFailedException(BaseException):
+    def __init__(self, message: str, note: str):
+        super().__init__(message, note, 'DB-D-02', 500)

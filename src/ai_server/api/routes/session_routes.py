@@ -61,3 +61,18 @@ async def get_all_user_sessions(
     Warning: This may return a large amount of data for users with many sessions.
     """
     return await SessionService.get_all_user_sessions(cookie_id=cookie_id)
+
+@router.delete("/sessions/{session_id}", tags=["Session"])
+async def delete_session(session_id: str) -> dict:
+    """
+    Delete a session and all its related data (messages, turns, summaries).
+    This operation is atomic and cannot be undone.
+    
+    Returns:
+        Dictionary with deletion counts:
+        - messages_deleted: Number of messages deleted
+        - turns_deleted: Number of turns deleted
+        - summaries_deleted: Number of summaries deleted
+        - session_deleted: Whether the session was deleted (true/false)
+    """
+    return await SessionService.delete_session(session_id=session_id)

@@ -83,3 +83,21 @@ class SessionService:
         """
         sessions = await Session.get_all_by_user_cookie(cookie_id=cookie_id)
         return [session.model_dump() for session in sessions]
+    
+    @classmethod
+    async def delete_session(cls, session_id: str) -> dict:
+        """
+        Delete a session and all its related data (messages, turns, summaries).
+        
+        Args:
+            session_id: The session ID to delete
+            
+        Returns:
+            Dictionary with deletion counts: {
+                "messages_deleted": int,
+                "turns_deleted": int,
+                "summaries_deleted": int,
+                "session_deleted": bool
+            }
+        """
+        return await Session.delete_with_related(session_id)

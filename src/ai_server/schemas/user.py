@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import pymongo
 from beanie import Document
 from bson import ObjectId
@@ -8,7 +9,15 @@ from datetime import datetime, timezone
 from pydantic import Field
 from enum import Enum
 
-from ai_server.api.exceptions.db_exceptions import UserRetrievalFailedException
+from ai_server.api.exceptions.db_exceptions import (
+    UserRetrievalFailedException,
+    UserDeletionFailedException
+)
+from ai_server.db import MongoDB
+from ai_server.schemas.session import Session
+from ai_server.schemas.message import Message
+from ai_server.schemas.turn import Turn
+from ai_server.schemas.summary import Summary
 
 
 class UserType(Enum):
@@ -65,3 +74,166 @@ class User(Document):
             return await cls.get_by_id(user_id)
         else:
             return await cls.get_by_cookie_id(cookie_id)
+    
+    @classmethod
+    async def delete_by_id_or_cookie(cls, user_id: str | None, cookie_id: str, cascade: bool = True) -> dict:
+        """
+        Delete a user by ID or cookie ID and optionally cascade delete all related sessions.
+        
+        Args:
+            user_id: MongoDB document ID of the user (optional)
+            cookie_id: Cookie ID of the user
+            cascade: If True, also delete all sessions (and their messages/turns/summaries)
+            
+        Returns:
+            Dictionary with deletion info: {
+                "user_deleted": bool,
+                "sessions_deleted": int,
+                "messages_deleted": int,
+                "turns_deleted": int,
+                "summaries_deleted": int
+            }
+            
+        Raises:
+            UserDeletionFailedException: If deletion fails
+        """
+        if user_id:
+            return await cls.delete_by_id(user_id, cascade=cascade)
+        else:
+            return await cls.delete_by_cookie_id(cookie_id, cascade=cascade)
+    
+    @classmethod
+    async def delete_by_cookie_id(cls, cookie_id: str, cascade: bool = True) -> dict:
+        """
+        Delete a user by cookie ID and optionally cascade delete all related sessions.
+        
+        Args:
+            cookie_id: Cookie ID of the user to delete
+            cascade: If True, also delete all sessions (and their messages/turns/summaries)
+            
+        Returns:
+            Dictionary with deletion info: {
+                "user_deleted": bool,
+                "sessions_deleted": int,
+                "messages_deleted": int,
+                "turns_deleted": int,
+                "summaries_deleted": int
+            }
+            
+        Raises:
+            UserDeletionFailedException: If deletion fails
+        """
+        try:
+            user = await cls.get_by_cookie_id(cookie_id)
+            if not user:
+                return {
+                    "user_deleted": False,
+                    "sessions_deleted": 0,
+                    "messages_deleted": 0,
+                    "turns_deleted": 0,
+                    "summaries_deleted": 0
+                }
+            
+            return await cls._delete_user_with_sessions(user, cascade)
+            
+        except Exception as e:
+            raise UserDeletionFailedException(
+                message="Failed to delete user by cookie ID",
+                note=f"cookie_id={cookie_id}, cascade={cascade}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def delete_by_id(cls, user_id: str, cascade: bool = True) -> dict:
+        """
+        Delete a user by ID and optionally cascade delete all related sessions.
+        
+        Args:
+            user_id: MongoDB document ID of the user to delete
+            cascade: If True, also delete all sessions (and their messages/turns/summaries)
+            
+        Returns:
+            Dictionary with deletion info: {
+                "user_deleted": bool,
+                "sessions_deleted": int,
+                "messages_deleted": int,
+                "turns_deleted": int,
+                "summaries_deleted": int
+            }
+            
+        Raises:
+            UserDeletionFailedException: If deletion fails
+        """
+        try:
+            user = await cls.get_by_id(user_id)
+            if not user:
+                return {
+                    "user_deleted": False,
+                    "sessions_deleted": 0,
+                    "messages_deleted": 0,
+                    "turns_deleted": 0,
+                    "summaries_deleted": 0
+                }
+            
+            return await cls._delete_user_with_sessions(user, cascade)
+            
+        except Exception as e:
+            raise UserDeletionFailedException(
+                message="Failed to delete user by ID",
+                note=f"user_id={user_id}, cascade={cascade}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def _delete_user_with_sessions(cls, user: User, cascade: bool) -> dict:
+        """
+        Internal helper to delete user and optionally cascade delete sessions.
+        
+        Args:
+            user: User object to delete
+            cascade: If True, delete all sessions with their related data
+            
+        Returns:
+            Dictionary with deletion counts
+        """
+        client = MongoDB.get_client()
+        
+        async with await client.start_session() as session_txn:
+            async with session_txn.start_transaction():
+                try:
+                    if cascade:
+                        # Delete user, sessions, and their related data in parallel
+                        delete_results = await asyncio.gather(
+                            user.delete(session=session_txn),
+                            Message.find({"session.user.$id": user.id}).delete(session=session_txn),
+                            Turn.find({"session.user.$id": user.id}).delete(session=session_txn),
+                            Summary.find({"session.user.$id": user.id}).delete(session=session_txn),
+                            Session.find(Session.user.id == user.id).delete(session=session_txn)
+                        )
+                        
+                        messages_deleted = delete_results[1].deleted_count if delete_results[1] else 0
+                        turns_deleted = delete_results[2].deleted_count if delete_results[2] else 0
+                        summaries_deleted = delete_results[3].deleted_count if delete_results[3] else 0
+                        sessions_deleted = delete_results[4].deleted_count if delete_results[4] else 0
+                    else:
+                        # Delete user and sessions in parallel, not their related data
+                        delete_results = await asyncio.gather(
+                            user.delete(session=session_txn),
+                            Session.find(Session.user.id == user.id).delete(session=session_txn)
+                        )
+                        sessions_deleted = delete_results[1].deleted_count if delete_results[1] else 0
+                        messages_deleted = 0
+                        turns_deleted = 0
+                        summaries_deleted = 0
+                    
+                    return {
+                        "user_deleted": True,
+                        "sessions_deleted": sessions_deleted,
+                        "messages_deleted": messages_deleted,
+                        "turns_deleted": turns_deleted,
+                        "summaries_deleted": summaries_deleted
+                    }
+                    
+                except Exception as e:
+                    raise UserDeletionFailedException(
+                        message="Failed to delete user with sessions",
+                        note=f"user_id={user.id}, cascade={cascade}, error={str(e)}"
+                    )
