@@ -2,15 +2,17 @@ import asyncio
 from typing import List, Tuple
 from pydantic import ValidationError
 
-from opentelemetry.trace import SpanKind
+import logging
 
 from ai_server.types.state import State
 from ai_server.types.message import MessageDTO, FunctionCallRequest
 from ai_server.schemas import User, Session, Turn, Summary, Role
 from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
-from ai_server.utils.tracing import trace_method, track_state_change
+from ai_server.api.exceptions.db_exceptions import SessionNotFoundException
+from ai_server.utils.tracing import trace_method, track_state_change, CustomSpanKinds
 
+logger = logging.getLogger(__name__)
 
 class SessionManager():
     def __init__(
@@ -67,12 +69,17 @@ class SessionManager():
             # Existing user, new chat - fetch user only
             self.user = await User.get_by_id_or_cookie(self.user_id, self.user_cookie)
         else:
-            # Existing user, existing chat - fetch session only
+            # Existing user, existing chat - fetch session only s
             if self.session_id:
                 self.session = await Session.get_by_id(self.session_id)
+                if not self.session:
+                    raise SessionNotFoundException(
+                        message=f"Session not found for session_id: {self.session_id}",
+                        note=f"session_id={self.session_id}"
+                    )
 
     @trace_method(
-        kind=SpanKind.INTERNAL,
+        kind=CustomSpanKinds.DATABASE.value,
         graph_node_id="fetch_context",
         capture_input=False,
         capture_output=False
@@ -87,7 +94,7 @@ class SessionManager():
         
         Traced as INTERNAL span for database fetch operations.
         """
-        if not self.state.new_chat:
+        if self.state.new_chat or not self.session:
             return [], None
         
         turns_task = Turn.get_latest_by_session(
@@ -165,7 +172,7 @@ class SessionManager():
         return messages
 
     @trace_method(
-        kind=SpanKind.INTERNAL,
+        kind=CustomSpanKinds.DATABASE.value,
         graph_node_id="session_context_loader",
         capture_input=False,
         capture_output=False
@@ -244,7 +251,7 @@ class SessionManager():
         """
         # Create error response DTO
         error_message_dto = MessageDTO(
-            role=Role.AI,
+            role=Role.AI.value,
             tool_call_id="null",
             metadata={"error_type": "insertion_failure"},
             content="I apologize, but something went wrong while processing your request. Please try again.",
@@ -257,7 +264,7 @@ class SessionManager():
         return [user_query_dto, error_message_dto]
 
     @trace_method(
-        kind=SpanKind.INTERNAL,
+        kind=CustomSpanKinds.DATABASE.value,
         graph_node_id="session_updater",
         capture_input=False,
         capture_output=False
@@ -311,13 +318,14 @@ class SessionManager():
                         messages=messages,
                         summary=summary
                     )
-            except Exception:
+            except Exception as e:
+                logger.error(f"Failed to insert messages and turn for session {self.session_id}: {str(e)}")
                 # If insertion fails, still save user message and error response
                 if not messages:
                     return
                 
                 # Create fallback messages with error response
-                fallback_messages = self._create_fallback_messages(messages[0])
+                fallback_messages = self.create_fallback_messages(messages[0])
                 
                 await self.session.insert_messages_and_turn(
                     turn_number=turn_number,

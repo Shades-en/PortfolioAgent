@@ -7,15 +7,16 @@ from ai_server.types.message import MessageDTO, Role
 from ai_server.schemas import Summary
 from ai_server.session_manager import SessionManager
 from ai_server.api.exceptions.agent_exceptions import MaxStepsReachedException
+from ai_server.utils.tracing import trace_method
 
 import asyncio
 from typing import List
 from dataclasses import dataclass
 
-from opentelemetry.trace import SpanKind
 from openinference.semconv.trace import OpenInferenceSpanKindValues
-from ai_server.utils.tracing import trace_method
+import logging
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class QueryResult:
@@ -36,7 +37,7 @@ class Runner:
         )
 
     @trace_method(
-        kind=SpanKind.INTERNAL,
+        kind=OpenInferenceSpanKindValues.LLM,
         graph_node_id="llm_parallel_generation",
         capture_input=False,
         capture_output=False
@@ -90,7 +91,7 @@ class Runner:
         capture_output=False,
         graph_node_id="query_handler"
     )
-    async def _handle_query(self, query: str) -> QueryResult:
+    async def _handle_query(self, query: str, skip_cache: bool = config.SKIP_CACHE) -> QueryResult:
         turn_completed = False
         tool_call = False
 
@@ -99,7 +100,7 @@ class Runner:
         summary: Summary | None = None
         new_summary: Summary | None = None
         messages: List[MessageDTO] = []
-        chat_name: str | None
+        chat_name: str | None = None
 
         user_query_message = MessageDTO(
             role=Role.HUMAN,
@@ -154,9 +155,17 @@ class Runner:
                 chat_name=chat_name,
                 fallback=False
             )
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error in _handle_query: {e}")
             fallback_messages = self.session_manager.create_fallback_messages(user_query_message)
-            previous_summary = summary or Summary.get_latest_by_session(session_id=str(self.session_manager.session.id))
+            
+            # Try to get summary: use existing, fetch from DB, or None
+            previous_summary = summary
+            if not previous_summary and self.session_manager.session:
+                previous_summary = Summary.get_latest_by_session(
+                    session_id=str(self.session_manager.session.id)
+                )
+            
             return QueryResult(
                 messages=fallback_messages,
                 summary=previous_summary,
@@ -169,7 +178,7 @@ class Runner:
         kind=OpenInferenceSpanKindValues.AGENT,
         graph_node_id=lambda self: self.agent.name.lower()
     )
-    async def run(self, query: str, skip_cache = config.SKIP_CACHE) -> List[dict]:
+    async def run(self, query: str, skip_cache = config.SKIP_CACHE) -> dict:
         result: QueryResult = await self._handle_query(query, skip_cache)
         await self.session_manager.update_user_session(
             messages=result.messages,
@@ -177,9 +186,21 @@ class Runner:
             chat_name=result.chat_name
         )
         
-        return [msg.model_dump() for msg in result.messages]
+        return {
+            "messages": [msg.model_dump() for msg in result.messages],
+            "summary": result.summary.model_dump() if result.summary else None,
+            "chat_name": result.chat_name
+        }
 
 
 # Test scenarios
+# 1. Token related summary generation
+# 2. Token related chat name generation
+# 3. Turn related summary generation
+# 4. Turn related chat name generation
+# 5. Test other routes like users, sessions, turns, summaries
+
+
+
 # implement redis caching
 # After adding redis rethink if you still need singleton anywhere

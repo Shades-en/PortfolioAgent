@@ -1,4 +1,5 @@
-class BaseException(Exception):
+class AppException(Exception):
+    """Base exception class for all application-specific exceptions."""
     def __init__(self, message: str, note: str, code: int, status_code: int):
         super().__init__(message)
         self.message = message

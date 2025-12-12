@@ -4,6 +4,7 @@ import asyncio
 import pymongo
 from beanie import Document
 from bson import ObjectId
+from pymongo import IndexModel
 
 from datetime import datetime, timezone
 from pydantic import Field
@@ -15,9 +16,7 @@ from ai_server.api.exceptions.db_exceptions import (
     UserRetrievalFailedException,
     UserDeletionFailedException
 )
-from ai_server.utils.tracing import trace_operation
-from ai_server.db import MongoDB
-from ai_server.schemas.session import Session
+from ai_server.utils.tracing import trace_operation, CustomSpanKinds
 from ai_server.schemas.message import Message
 from ai_server.schemas.turn import Turn
 from ai_server.schemas.summary import Summary
@@ -36,7 +35,10 @@ class User(Document):
     class Settings:
         name = "users"
         indexes = [
-            [("cookie_id", pymongo.ASCENDING)]
+            IndexModel(
+                [("cookie_id", pymongo.ASCENDING)],
+                unique=True,
+            )
         ]
     
     @classmethod
@@ -106,7 +108,7 @@ class User(Document):
             return await cls.delete_by_cookie_id(cookie_id, cascade=cascade)
     
     @classmethod
-    @trace_operation(kind=SpanKind.INTERNAL)
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
     async def delete_by_cookie_id(cls, cookie_id: str, cascade: bool = True) -> dict:
         """
         Delete a user by cookie ID and optionally cascade delete all related sessions.
@@ -149,7 +151,7 @@ class User(Document):
             )
     
     @classmethod
-    @trace_operation(kind=SpanKind.INTERNAL)
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
     async def delete_by_id(cls, user_id: str, cascade: bool = True) -> dict:
         """
         Delete a user by ID and optionally cascade delete all related sessions.
@@ -192,7 +194,7 @@ class User(Document):
             )
     
     @classmethod
-    @trace_operation(kind=SpanKind.INTERNAL)
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
     async def _delete_user_with_sessions(cls, user: User, cascade: bool) -> dict:
         """
         Internal helper to delete user and optionally cascade delete sessions.
@@ -206,11 +208,14 @@ class User(Document):
         
         Traced as INTERNAL span for database transaction with cascade delete.
         """
+        from ai_server.db import MongoDB
+        from ai_server.schemas.session import Session
+
         client = MongoDB.get_client()
         
-        async with await client.start_session() as session_txn:
-            async with session_txn.start_transaction():
-                try:
+        async with client.start_session() as session_txn:
+            try:
+                async with await session_txn.start_transaction():
                     if cascade:
                         # Delete user, sessions, and their related data in parallel
                         delete_results = await asyncio.gather(
@@ -244,8 +249,8 @@ class User(Document):
                         "summaries_deleted": summaries_deleted
                     }
                     
-                except Exception as e:
-                    raise UserDeletionFailedException(
-                        message="Failed to delete user with sessions",
-                        note=f"user_id={user.id}, cascade={cascade}, error={str(e)}"
-                    )
+            except Exception as e:
+                raise UserDeletionFailedException(
+                    message="Failed to delete user with sessions",
+                    note=f"user_id={user.id}, cascade={cascade}, error={str(e)}"
+                )

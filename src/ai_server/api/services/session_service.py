@@ -1,6 +1,7 @@
 from typing import List
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
+from opentelemetry.trace import SpanKind
 
 from ai_server.schemas import Session, Message
 from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE
@@ -8,8 +9,8 @@ from ai_server.utils.tracing import trace_operation
 
 
 class SessionService:
-    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def get_session_messages(
         cls,
         session_id: str,
@@ -37,8 +38,8 @@ class SessionService:
         )
         return [msg.model_dump() for msg in messages]
     
-    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def get_all_session_messages(cls, session_id: str) -> List[dict]:
         """
         Get all messages for a session in chronological order (oldest to newest).
@@ -54,8 +55,8 @@ class SessionService:
         messages = await Message.get_all_by_session(session_id=session_id)
         return [msg.model_dump() for msg in messages]
     
-    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def get_user_sessions(
         cls,
         cookie_id: str,
@@ -82,8 +83,8 @@ class SessionService:
         )
         return [session.model_dump() for session in sessions]
     
-    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def get_all_user_sessions(cls, cookie_id: str) -> List[dict]:
         """
         Get all sessions for a user by cookie ID, sorted by most recent first.
@@ -99,8 +100,8 @@ class SessionService:
         sessions = await Session.get_all_by_user_cookie(cookie_id=cookie_id)
         return [session.model_dump() for session in sessions]
     
-    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def delete_session(cls, session_id: str) -> dict:
         """
         Delete a session and all its related data (messages, turns, summaries).

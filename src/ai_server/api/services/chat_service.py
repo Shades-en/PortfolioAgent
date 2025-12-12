@@ -10,11 +10,11 @@ from ai_server.session_manager import SessionManager
 from ai_server.utils.tracing import trace_method
 
 class ChatService:
+    @classmethod
     @trace_method(
         kind=OpenInferenceSpanKindValues.CHAIN,
         graph_node_id="chat_service"
     )
-    @classmethod
     async def chat(
         cls, 
         query: str, 
@@ -24,7 +24,7 @@ class ChatService:
         turn_number: int,
         new_chat: bool,
         new_user: bool,
-    ) -> List[dict]:
+    ) -> dict:
         """
         Handle a chat request by orchestrating session management, agent creation, and query execution.
         

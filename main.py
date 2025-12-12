@@ -13,7 +13,7 @@ from opentelemetry.instrumentation.redis import RedisInstrumentor
 from openinference.instrumentation.langchain import LangChainInstrumentor
 
 from ai_server import (
-    BaseException, router, lifespan, GenericTracingMiddleware,
+    AppException, router, lifespan, GenericTracingMiddleware,
     setup_logging, BASE_PATH, HOST, PORT, RELOAD, WORKERS
 )
 
@@ -21,16 +21,24 @@ load_dotenv()
 
 setup_logging(level="INFO")
 
-tracer_provider = register(
-    space_id = os.getenv("ARIZE_SPACE_ID"),
-    api_key = os.getenv("ARIZE_API_KEY"),
-    project_name = os.getenv("ARIZE_PROJECT_NAME"),
-)
+# Initialize tracing only if Arize credentials are configured
+ENABLE_TRACING = os.getenv("ENABLE_TRACING", "true").lower() == "true"
+ARIZE_SPACE_ID = os.getenv("ARIZE_SPACE_ID")
+ARIZE_API_KEY = os.getenv("ARIZE_API_KEY")
 
-OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
-PymongoInstrumentor().instrument(tracer_provider=tracer_provider)
-RedisInstrumentor().instrument(tracer_provider=tracer_provider)
-LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+if ENABLE_TRACING and ARIZE_SPACE_ID and ARIZE_API_KEY:
+    tracer_provider = register(
+        space_id=ARIZE_SPACE_ID,
+        api_key=ARIZE_API_KEY,
+        project_name=os.getenv("ARIZE_PROJECT_NAME", "Portfolio AI Server"),
+    )
+    
+    OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+    PymongoInstrumentor().instrument(tracer_provider=tracer_provider)
+    RedisInstrumentor().instrument(tracer_provider=tracer_provider)
+    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+else:
+    print("⚠️  Tracing disabled - Set ENABLE_TRACING=true and configure Arize credentials to enable")
 
 app = FastAPI(
     root_path=BASE_PATH,
@@ -51,7 +59,7 @@ app.add_middleware(
 
 app.include_router(router)
 
-@app.exception_handler(BaseException)
+@app.exception_handler(AppException)
 def exception_handler(request, exc):
     # Handle exceptions with status_code attribute (custom exceptions)
     status_code = getattr(exc, 'status_code', 500)

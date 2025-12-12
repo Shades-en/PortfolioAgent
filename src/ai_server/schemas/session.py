@@ -10,7 +10,6 @@ from typing import List, TYPE_CHECKING
 import asyncio
 
 from opentelemetry.trace import SpanKind
-from ai_server.utils.tracing import trace_method, trace_operation
 
 if TYPE_CHECKING:
     from pymongo.client_session import ClientSession
@@ -28,8 +27,8 @@ from ai_server.api.exceptions.db_exceptions import (
     MessageCreationFailedException,
     TurnCreationFailedException
 )
-from ai_server.db import MongoDB
 from ai_server.config import DEFAULT_SESSION_NAME, DEFAULT_SESSION_PAGE_SIZE
+from ai_server.utils.tracing import trace_method, trace_operation, CustomSpanKinds
 
 class Session(Document):
     name: str = Field(default_factory=lambda: DEFAULT_SESSION_NAME)
@@ -80,11 +79,13 @@ class Session(Document):
         
         Traced as INTERNAL span for database transaction.
         """
+        from ai_server.db import MongoDB
+
         client = MongoDB.get_client()
         
-        async with await client.start_session() as session_txn:
-            async with session_txn.start_transaction():
-                try:
+        async with client.start_session() as session_txn:
+            try:
+                async with await session_txn.start_transaction():
                     # Create new user
                     new_user = User(cookie_id=cookie_id)
                     await new_user.insert(session=session_txn)
@@ -98,12 +99,12 @@ class Session(Document):
                     
                     return new_session
                     
-                except Exception as e:
-                    # Transaction will automatically abort on exception
-                    raise SessionCreationFailedException(
-                        message="Failed to create session with user in transaction",
-                        note=f"cookie_id={cookie_id}, session_name={session_name}, error={str(e)}"
-                    )
+            except Exception as e:
+                # Transaction will automatically abort on exception
+                raise SessionCreationFailedException(
+                    message="Failed to create session with user in transaction",
+                    note=f"cookie_id={cookie_id}, session_name={session_name}, error={str(e)}"
+                )
     
     @classmethod
     async def create_for_existing_user(
@@ -171,7 +172,7 @@ class Session(Document):
             )
     
     @classmethod
-    @trace_operation(kind=SpanKind.INTERNAL)
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
     async def delete_with_related(cls, session_id: str) -> dict:
         """
         Delete session and all related documents (messages, turns, summaries) in a transaction.
@@ -196,6 +197,7 @@ class Session(Document):
         from ai_server.schemas.message import Message
         from ai_server.schemas.turn import Turn
         from ai_server.schemas.summary import Summary
+        from ai_server.db import MongoDB
         
         try:
             obj_id = ObjectId(session_id)
@@ -210,8 +212,8 @@ class Session(Document):
             
             client = MongoDB.get_client()
             
-            async with await client.start_session() as session_txn:
-                async with session_txn.start_transaction():
+            async with client.start_session() as session_txn:
+                async with await session_txn.start_transaction():
                     # Delete session, messages, turns, and summaries in parallel
                     delete_results = await asyncio.gather(
                         session.delete(session=session_txn),
@@ -240,7 +242,7 @@ class Session(Document):
     async def insert_messages(
         self, 
         messages: List[MessageDTO],
-        session: "ClientSession | None" = None
+        session: ClientSession | None = None
     ) -> List[Message]:
         """
         Bulk insert messages for this session.
@@ -271,7 +273,7 @@ class Session(Document):
             message_docs = []
             for msg_dto in messages:
                 message_doc = Message(
-                    role=msg_dto.role,
+                    role=msg_dto.role.value,  # Extract string value from enum
                     tool_call_id=msg_dto.tool_call_id,
                     metadata=msg_dto.metadata,
                     content=msg_dto.content,
@@ -298,7 +300,7 @@ class Session(Document):
         turn_number: int,
         message_docs: List[Message],
         summary: Summary | None = None,
-        session: "ClientSession | None" = None
+        session: ClientSession | None = None
     ) -> Turn:
         """
         Create and insert a Turn for this session.
@@ -379,6 +381,8 @@ class Session(Document):
         
         Traced as INTERNAL span for database transaction.
         """
+        from ai_server.db import MongoDB
+
         if not self.id:
             raise TurnCreationFailedException(
                 message="Cannot insert messages and turn for unsaved session",
@@ -393,9 +397,9 @@ class Session(Document):
         
         client = MongoDB.get_client()
         
-        async with await client.start_session() as session_txn:
-            async with session_txn.start_transaction():
-                try:
+        async with client.start_session() as session_txn:
+            try:
+                async with await session_txn.start_transaction():
                     # Insert messages using the existing method
                     message_docs = await self.insert_messages(messages, session=session_txn)
                     
@@ -409,12 +413,12 @@ class Session(Document):
                     
                     return message_docs, new_turn
                     
-                except Exception as e:
-                    # Transaction will automatically abort on exception
-                    raise TurnCreationFailedException(
-                        message="Failed to insert messages and turn in transaction",
-                        note=f"session_id={self.id}, turn_number={turn_number}, message_count={len(messages)}, error={str(e)}"
-                    )
+            except Exception as e:
+                # Transaction will automatically abort on exception
+                raise TurnCreationFailedException(
+                    message="Failed to insert messages and turn in transaction",
+                    note=f"session_id={self.id}, turn_number={turn_number}, message_count={len(messages)}, error={str(e)}"
+                )
     
     @classmethod
     async def get_paginated_by_user_cookie(

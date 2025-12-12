@@ -1,12 +1,13 @@
 from openinference.semconv.trace import OpenInferenceSpanKindValues
+from opentelemetry.trace import SpanKind
 
 from ai_server.schemas import User
 from ai_server.utils.tracing import trace_operation
 
 
 class UserService:
-    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def get_user(cls, user_id: str | None = None, cookie_id: str | None = None) -> User | None:
         """
         Get a user by their ID or cookie ID.
@@ -28,8 +29,8 @@ class UserService:
         
         return await User.get_by_id_or_cookie(user_id=user_id, cookie_id=cookie_id)
     
-    @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
     @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def delete_user(
         cls, 
         user_id: str | None = None, 

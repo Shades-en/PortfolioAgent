@@ -5,7 +5,7 @@ from pymongo import AsyncMongoClient
 from opentelemetry.trace import SpanKind
 
 from ai_server.schemas import User, Session, Summary, Turn, Message
-from ai_server.utils.tracing import trace_operation
+from ai_server.utils.tracing import trace_operation, CustomSpanKinds
 
 # All document models to register with Beanie
 DOCUMENT_MODELS: List[Type[Document]] = [
@@ -26,6 +26,7 @@ class MongoDB:
     @classmethod
     @trace_operation(
         kind=SpanKind.INTERNAL,
+        open_inference_kind=CustomSpanKinds.DATABASE.value,
         capture_input=False,
         capture_output=False
     )
@@ -75,11 +76,31 @@ class MongoDB:
             allow_index_dropping=allow_index_dropping,
         )
         
+        # TODO: READ ABOUT WHY THIS HAPPENS AND IS NEEDED
+        # Rebuild models to resolve circular dependencies
+        # Message has Link[Session]
+        # Turn has Link[Session], Link[Summary], List[Link[Message]]
+        # Session imports Message, Turn, Summary
+        # Pass the namespace so forward references can be resolved
+        Message.model_rebuild(_types_namespace={'Session': Session})
+        Turn.model_rebuild(_types_namespace={
+            'Session': Session,
+            'Summary': Summary,
+            'Message': Message
+        })
+        Session.model_rebuild(_types_namespace={
+            'Message': Message,
+            'Turn': Turn,
+            'Summary': Summary
+        })
+        Summary.model_rebuild(_types_namespace={'Session': Session})
+        
         cls._initialized = True
     
     @classmethod
     @trace_operation(
         kind=SpanKind.INTERNAL,
+        open_inference_kind=CustomSpanKinds.DATABASE.value,
         capture_input=False,
         capture_output=False
     )

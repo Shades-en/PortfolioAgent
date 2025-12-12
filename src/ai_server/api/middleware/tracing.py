@@ -7,10 +7,15 @@ This middleware is endpoint-agnostic and captures all request data
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
+
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+from openinference.semconv.trace import SpanAttributes
+from opentelemetry.trace import SpanKind
 
 import json
+
+from ai_server.utils.tracing import CustomSpanKinds
 
 
 class GenericTracingMiddleware(BaseHTTPMiddleware):
@@ -39,9 +44,12 @@ class GenericTracingMiddleware(BaseHTTPMiddleware):
         
         with tracer.start_as_current_span(
             f"{request.method} {request.url.path}",
-            kind=trace.SpanKind.SERVER
+            kind=SpanKind.SERVER  # OpenTelemetry standard kind
         ) as span:
             try:
+                # Custom span category (for filtering/grouping)
+                span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, CustomSpanKinds.SERVER.value)
+                
                 # HTTP attributes
                 span.set_attribute("http.method", request.method)
                 span.set_attribute("http.url", str(request.url))
@@ -53,21 +61,31 @@ class GenericTracingMiddleware(BaseHTTPMiddleware):
                 if "user-agent" in request.headers:
                     span.set_attribute("http.user_agent", request.headers["user-agent"])
                 
+                # Collect input data for OpenInference INPUT attribute
+                input_data = {}
+                
                 # Query parameters
                 if request.query_params:
-                    for key, value in request.query_params.items():
+                    query_params = dict(request.query_params)
+                    input_data["query_params"] = query_params
+                    # Also set individual attributes for easy filtering
+                    for key, value in query_params.items():
                         span.set_attribute(f"http.query.{key}", value)
                 
                 # Path parameters
                 if hasattr(request, "path_params") and request.path_params:
-                    for key, value in request.path_params.items():
+                    path_params = dict(request.path_params)
+                    input_data["path_params"] = path_params
+                    # Also set individual attributes for easy filtering
+                    for key, value in path_params.items():
                         span.set_attribute(f"http.path.{key}", str(value))
                 
                 # Request body (for POST/PUT/PATCH)
                 if request.method in ["POST", "PUT", "PATCH"]:
                     try:
                         body = await request.json()
-                        # Add each body field as attribute
+                        input_data["body"] = body
+                        # Also set individual body field attributes
                         for key, value in body.items():
                             if isinstance(value, (str, int, float, bool)):
                                 span.set_attribute(f"request.body.{key}", value)
@@ -78,18 +96,35 @@ class GenericTracingMiddleware(BaseHTTPMiddleware):
                         # If body is not JSON or can't be read, skip
                         pass
                 
+                # Set OpenInference INPUT attribute with all input data
+                if input_data:
+                    span.set_attribute(
+                        SpanAttributes.INPUT_VALUE,
+                        json.dumps(input_data)
+                    )
+                
                 # Process request
                 response = await call_next(request)
                 
                 # Add response status
                 span.set_attribute("http.status_code", response.status_code)
-                span.set_status(Status(StatusCode.OK))
+                
+                # Set span status based on HTTP status code
+                if response.status_code >= 400:
+                    # Error response - set ERROR status with status code
+                    span.set_status(
+                        Status(StatusCode.ERROR, f"HTTP {response.status_code}")
+                    )
+                else:
+                    # Success response
+                    span.set_status(Status(StatusCode.OK))
                 
                 return response
                 
             except Exception as e:
                 span.set_attribute("http.status_code", 500)
                 span.set_attribute("error.type", type(e).__name__)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
+                error_msg = str(e) if str(e) else type(e).__name__
+                span.set_status(Status(StatusCode.ERROR, error_msg))
                 span.record_exception(e)
                 raise

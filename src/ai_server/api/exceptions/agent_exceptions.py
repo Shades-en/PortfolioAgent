@@ -1,7 +1,7 @@
-from ai_server.api.exceptions.error import BaseException
+from ai_server.api.exceptions.error import AppException
 
 
-class MaxStepsReachedException(BaseException):
+class MaxStepsReachedException(AppException):
     """Raised when the agent exceeds the maximum number of steps allowed in a single turn."""
     
     def __init__(

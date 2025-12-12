@@ -5,6 +5,7 @@ from opentelemetry.trace import Status, StatusCode
 from functools import wraps
 from contextvars import ContextVar
 from contextlib import asynccontextmanager
+from enum import Enum
 
 import asyncio
 import time
@@ -434,7 +435,8 @@ def trace_method(
                         return result
                         
                     except Exception as e:
-                        span.set_status(Status(StatusCode.ERROR, str(e)))
+                        error_msg = str(e) if str(e) else type(e).__name__
+                        span.set_status(Status(StatusCode.ERROR, error_msg))
                         span.record_exception(e)
                         raise
                 
@@ -448,6 +450,8 @@ def trace_method(
 
 def trace_operation(
     kind: str | None = None,
+    open_inference_kind: str | None = None,
+    category: str | None = None,
     capture_input: bool = False,
     capture_output: bool = False
 ):
@@ -462,16 +466,20 @@ def trace_operation(
     - Automatically generates span name from class.method
     
     Args:
-        kind: Span kind (e.g., SpanKind.INTERNAL, OpenInferenceSpanKindValues.CHAIN)
+        kind: OpenTelemetry span kind (e.g., SpanKind.INTERNAL, SpanKind.SERVER)
+        category: Custom span category for filtering (e.g., DATABASE, CACHE, SERVER)
         capture_input: Whether to capture function input as span attributes
         capture_output: Whether to capture function output as span attributes
     
     Example:
-        >>> @trace_operation(kind=OpenInferenceSpanKindValues.CHAIN)
+        >>> from ai_server.constants import DATABASE
+        >>> @trace_operation(kind=SpanKind.INTERNAL, category=DATABASE)
         ... @classmethod
         ... async def delete_message(cls, message_id: str):
         ...     return await Message.delete_by_id(message_id)
         ... # Span name: "MessageService.delete_message"
+        ... # Span kind: INTERNAL
+        ... # Span category: "DATABASE"
     
     Use this for:
     - CRUD service methods
@@ -500,10 +508,19 @@ def trace_operation(
             
             with tracer.start_as_current_span(**span_kwargs) as span:
                 try:
+                    # Set custom category if provided
+                    if category:
+                        span.set_attribute("span.category", category)
+                    
                     # Capture input if requested
                     if capture_input:
                         span.set_attribute("input.args", str(args))
                         span.set_attribute("input.kwargs", str(kwargs))
+
+                    if open_inference_kind:
+                        # Extract value from enum if needed
+                        kind_value = getattr(open_inference_kind, 'value', open_inference_kind)
+                        span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, kind_value)
                     
                     # Execute function
                     result = await func(*args, **kwargs)
@@ -516,7 +533,8 @@ def trace_operation(
                     return result
                     
                 except Exception as e:
-                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    error_msg = str(e) if str(e) else type(e).__name__
+                    span.set_status(Status(StatusCode.ERROR, error_msg))
                     span.record_exception(e)
                     raise
         
@@ -540,10 +558,20 @@ def trace_operation(
             
             with tracer.start_as_current_span(**span_kwargs) as span:
                 try:
+                    # Set custom category if provided
+                    if category:
+                        span.set_attribute("span.category", category)
+                    
                     # Capture input if requested
                     if capture_input:
                         span.set_attribute("input.args", str(args))
                         span.set_attribute("input.kwargs", str(kwargs))
+                    
+                    # Set OpenInference span kind if provided
+                    if open_inference_kind:
+                        # Extract value from enum if needed
+                        kind_value = getattr(open_inference_kind, 'value', open_inference_kind)
+                        span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, kind_value)
                     
                     # Execute function
                     result = func(*args, **kwargs)
@@ -556,7 +584,8 @@ def trace_operation(
                     return result
                     
                 except Exception as e:
-                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    error_msg = str(e) if str(e) else type(e).__name__
+                    span.set_status(Status(StatusCode.ERROR, error_msg))
                     span.record_exception(e)
                     raise
         
@@ -567,6 +596,13 @@ def trace_operation(
             return sync_wrapper
     
     return decorator
+
+class CustomSpanKinds(Enum):
+    INIT = "INIT"
+    DATABASE = "DATABASE"
+    CACHE = "CACHE"
+    VECTOR_INDEX = "VECTOR_INDEX"
+    SERVER = "SERVER"
 
 
 __all__ = [
@@ -583,4 +619,6 @@ __all__ = [
     "pop_graph_node",       # Pop graph node from stack
     # State tracking
     "track_state_change",   # Track state mutations in spans
+    # Span kinds
+    "CustomSpanKinds",     # Custom span kind enum
 ]

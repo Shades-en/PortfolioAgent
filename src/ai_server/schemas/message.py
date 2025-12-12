@@ -13,13 +13,12 @@ import asyncio
 from opentelemetry.trace import SpanKind
 
 from ai_server.utils.general import get_token_count
-from ai_server.utils.tracing import trace_operation
+from ai_server.utils.tracing import trace_operation, CustomSpanKinds
 from ai_server.api.exceptions.db_exceptions import (
     MessageRetrievalFailedException,
     MessageDeletionFailedException
 )
 from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE
-from ai_server.db import MongoDB
 
 if TYPE_CHECKING:
     from ai_server.schemas.session import Session
@@ -130,7 +129,7 @@ class Message(Document):
             )
     
     @classmethod
-    @trace_operation(kind=SpanKind.INTERNAL)
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
     async def delete_by_id(cls, message_id: str) -> dict:
         """
         Delete a message by its ID and remove its reference from any Turn.
@@ -151,6 +150,7 @@ class Message(Document):
         Traced as INTERNAL span for database transaction.
         """
         from ai_server.schemas.turn import Turn
+        from ai_server.db import MongoDB
         
         try:
             obj_id = ObjectId(message_id)
@@ -163,8 +163,8 @@ class Message(Document):
             
             client = MongoDB.get_client()
             
-            async with await client.start_session() as session_txn:
-                async with session_txn.start_transaction():
+            async with client.start_session() as session_txn:
+                async with await session_txn.start_transaction():
                     # Delete message and remove from turn in parallel
                     # Query turn that contains this message in its messages array
                     message_delete, turn_update = await asyncio.gather(
@@ -184,7 +184,7 @@ class Message(Document):
                         "message_deleted": True,
                         "turns_updated": turns_updated
                     }
-            
+                    
         except Exception as e:
             raise MessageDeletionFailedException(
                 message="Failed to delete message by ID",

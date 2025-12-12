@@ -12,6 +12,9 @@ WORKERS = int(os.getenv("WORKERS", 4))
 RELOAD = _env_flag("RELOAD", True)
 BASE_PATH = os.getenv("BASE_PATH", "/api")
 
+# Development mode - enables index dropping and other dev features
+DEV_MODE = _env_flag("DEV_MODE", False)
+
 # Model Configuration
 BASE_MODEL = os.getenv("BASE_MODEL", GPT_4_1_MINI)
 BASE_EMBEDDING_MODEL = os.getenv("BASE_EMBEDDING_MODEL", TEXT_EMBEDDING_3_SMALL)

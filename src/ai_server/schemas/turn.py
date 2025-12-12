@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 from beanie import Document, Link
 import pymongo
+from pymongo import IndexModel
 from bson import ObjectId
 
 if TYPE_CHECKING:
@@ -22,7 +23,11 @@ class Turn(Document):
     class Settings:
         name = "turns"
         indexes = [
-            [("session.$id", pymongo.ASCENDING), ("turn_number", pymongo.ASCENDING)]
+            IndexModel(
+                [("session.$id", pymongo.ASCENDING), ("turn_number", pymongo.ASCENDING)],
+                unique=True,
+                name="session_turn_unique_idx"
+            )
         ]
     
     @classmethod
