@@ -6,11 +6,15 @@ from functools import wraps
 from contextvars import ContextVar
 from contextlib import asynccontextmanager
 from enum import Enum
+from datetime import datetime, date
 
 import asyncio
 import time
 import json
 from typing import Mapping, Any, Callable
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Context Variables for Request-Scoped Tracing
@@ -174,19 +178,58 @@ def _set_span_attributes(span: trace.Span, attributes: Mapping[str, Any]):
             span.set_attribute(key, value)
 
 
+def _serialize_for_json(obj):
+    """
+    Custom JSON serializer that handles enums, datetime, and other non-serializable types.
+    """
+    if isinstance(obj, Enum):
+        return obj.value
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif hasattr(obj, 'model_dump'):
+        return obj.model_dump()
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_serialize_for_json(item) for item in obj]
+    else:
+        return obj
+
+
 def _attach_output_to_span(span: trace.Span, result):
     """Helper function to attach output to span if serializable."""
     try:
         if result is not None:
+            output_value = None
+            
+            # Handle Pydantic models
             if hasattr(result, 'model_dump'):
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, json.dumps(result.model_dump()))
+                output_value = json.dumps(result.model_dump())
+            # Handle list of Pydantic models
             elif isinstance(result, list) and all(hasattr(item, 'model_dump') for item in result):
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, json.dumps([item.model_dump() for item in result]))
-            elif isinstance(result, (list, dict, str, int, float, bool)):
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, json.dumps(result))
-    except Exception:
-        # If serialization fails, skip output attachment
-        pass
+                output_value = json.dumps([item.model_dump() for item in result])
+            # Handle dict, list, primitives (with enum support)
+            elif isinstance(result, (dict, list, str, int, float, bool)):
+                # Use custom serializer to handle enums
+                serialized = _serialize_for_json(result)
+                output_value = json.dumps(serialized)
+            
+            # Set attribute if we have a value
+            if output_value:
+                # Truncate if too large (OpenTelemetry has attribute size limits)
+                max_length = 10000  # 10KB limit
+                if len(output_value) > max_length:
+                    output_value = output_value[:max_length] + "... [truncated]"
+                    logger.debug(f"Output truncated to {max_length} chars for span")
+                
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, output_value)
+                logger.debug(f"Attached output to span: {len(output_value)} chars")
+            else:
+                logger.debug(f"Could not serialize output of type {type(result)}")
+                
+    except Exception as e:
+        # If serialization fails, log and skip output attachment
+        logger.warning(f"Failed to attach output to span: {e}")
 
 
 def add_graph_attributes(

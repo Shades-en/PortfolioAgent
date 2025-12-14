@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from opentelemetry.trace import SpanKind
+
 from ai_server import config
 from ai_server.ai.agents.agent import Agent
 from ai_server.ai.providers import get_llm_provider
@@ -37,7 +39,7 @@ class Runner:
         )
 
     @trace_method(
-        kind=OpenInferenceSpanKindValues.LLM,
+        kind=SpanKind.INTERNAL,
         graph_node_id="llm_parallel_generation",
         capture_input=False,
         capture_output=False
@@ -199,6 +201,7 @@ class Runner:
 # 3. Turn related summary generation
 # 4. Turn related chat name generation
 # 5. Test other routes like users, sessions, turns, summaries
+# 6. Test toolcalls
 
 
 

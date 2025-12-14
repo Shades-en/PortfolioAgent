@@ -1,5 +1,3 @@
-from typing import List
-
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 
 from ai_server.ai.runner import Runner

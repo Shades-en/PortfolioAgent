@@ -7,11 +7,22 @@ from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
 from ai_server.ai.prompts.chat_name import CHAT_NAME_SYSTEM_PROMPT, CHAT_NAME_USER_PROMPT
 
-from ai_server.types.message import MessageDTO, Role, FunctionCallRequest
 from ai_server.utils.general import get_env_int, get_token_count
-from ai_server.config import BASE_MODEL, BASE_EMBEDDING_MODEL
+from ai_server.utils.tracing import trace_method
+from ai_server.types.message import MessageDTO, Role, FunctionCallRequest
+from ai_server.config import (
+    BASE_MODEL, 
+    BASE_EMBEDDING_MODEL, 
+    MAX_TOKEN_THRESHOLD, 
+    MAX_TURNS_TO_FETCH, 
+    TURNS_BETWEEN_CHAT_NAME, 
+    MAX_CHAT_NAME_WORDS, 
+    MAX_CHAT_NAME_LENGTH
+)
 from ai_server.constants import OPENAI
-import ai_server.config as config
+
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+import logging
 
 import asyncio
 import json
@@ -25,9 +36,6 @@ from openai.types.chat.chat_completion import ChatCompletion
 import os
 from typing import List, Dict
 from abc import ABC, abstractmethod
-import logging
-
-from ai_server.config import MAX_TOKEN_THRESHOLD, MAX_TURNS_TO_FETCH
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +112,12 @@ class OpenAIProvider(LLMProvider, ABC):
         pass
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.LLM,
+        graph_node_id="llm_generate_response",
+        capture_input=False,  # Don't capture full conversation history
+        capture_output=False  # Don't capture full response
+    )
     async def generate_response(
         cls, 
         conversation_history: List[MessageDTO], 
@@ -111,7 +125,12 @@ class OpenAIProvider(LLMProvider, ABC):
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL
     ) -> tuple[List[MessageDTO], bool]:
-        """Generate a response from the LLM. Tracing inherited from parent class."""
+        """
+        Generate a response from the LLM.
+        
+        Traced as LLM span with model name and tool information.
+        OpenAI instrumentation will automatically capture tokens, latency, and costs.
+        """
         tool_call = False
         input_messages = list(map(cls._convert_to_openai_compatible_messages, conversation_history))
         response = await cls._call_llm(
@@ -159,6 +178,12 @@ class OpenAIProvider(LLMProvider, ABC):
         return cls._extract_text_from_response(response)
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.LLM,
+        graph_node_id="llm_generate_summary_or_chat_name",
+        capture_input=False,
+        capture_output=False
+    )
     async def generate_summary_or_chat_name(
         cls, 
         conversation_to_summarize: List[MessageDTO], 
@@ -172,6 +197,8 @@ class OpenAIProvider(LLMProvider, ABC):
     ) -> tuple[str | None, str | None]:
         """
         Generate a summary and/or chat name based on conversation state.
+        
+        Traced as LLM span for summary/chat name generation.
         
         Summary generation:
         - Triggered when token threshold or turn limit is exceeded
@@ -213,7 +240,7 @@ class OpenAIProvider(LLMProvider, ABC):
             if new_chat:
                 # New chat: generate name from query only
                 chat_name = await cls._generate_chat_name(query)
-            elif turn_number % config.TURNS_BETWEEN_CHAT_NAME == 0:
+            elif turn_number % TURNS_BETWEEN_CHAT_NAME == 0:
                 # Existing chat: generate name periodically with context
                 chat_name = await cls._generate_chat_name(query, previous_summary)
         
@@ -239,7 +266,7 @@ class OpenAIProvider(LLMProvider, ABC):
         user_prompt = CHAT_NAME_USER_PROMPT.format(
             context=context, 
             query=query,
-            max_words=config.MAX_CHAT_NAME_WORDS
+            max_words=MAX_CHAT_NAME_WORDS
         )
 
         try:
@@ -251,7 +278,7 @@ class OpenAIProvider(LLMProvider, ABC):
             
             response = await cls._call_llm(
                 input_messages=input_messages,
-                model=config.BASE_MODEL,
+                model=BASE_MODEL,
                 temperature=0.7
             )
             
@@ -259,7 +286,7 @@ class OpenAIProvider(LLMProvider, ABC):
             chat_name = cls._extract_text_from_response(response)
             
             # Ensure it's not too long
-            max_length = config.MAX_CHAT_NAME_LENGTH
+            max_length = MAX_CHAT_NAME_LENGTH
             if len(chat_name) > max_length:
                 chat_name = chat_name[:max_length - 3] + "..."
             
@@ -267,10 +294,10 @@ class OpenAIProvider(LLMProvider, ABC):
             
         except Exception:
             # Fallback: use first few words of query
-            max_words = config.MAX_CHAT_NAME_WORDS
+            max_words = MAX_CHAT_NAME_WORDS
             words = query.split()[:max_words]
             fallback_name = " ".join(words)
-            max_length = config.MAX_CHAT_NAME_LENGTH
+            max_length = MAX_CHAT_NAME_LENGTH
             return fallback_name[:max_length] if len(fallback_name) <= max_length else fallback_name[:max_length - 3] + "..."
 
     @classmethod
@@ -362,6 +389,12 @@ class OpenAIResponsesAPI(OpenAIProvider):
         }
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.CHAIN,
+        graph_node_id="response_handler",
+        capture_input=False,
+        capture_output=False
+    )
     async def _handle_ai_messages_and_tool_calls(
         cls, 
         response: Response, 
@@ -489,6 +522,12 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         }
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.CHAIN,
+        graph_node_id="response_handler",
+        capture_input=False,
+        capture_output=False
+    )
     async def _handle_ai_messages_and_tool_calls(
         cls, 
         response: ChatCompletion, 

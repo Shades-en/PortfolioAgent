@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict
 
-from openinference.semconv.trace import OpenInferenceSpanKindValues
-from ai_server.utils.tracing import trace_method
 from ai_server.types.message import MessageDTO, FunctionCallRequest
 from ai_server.ai.tools.tools import Tool
 from ai_server.config import BASE_MODEL
@@ -27,12 +25,6 @@ class LLMProvider(ABC):
         pass
 
     @classmethod
-    @trace_method(
-        kind=OpenInferenceSpanKindValues.TOOL,
-        graph_node_id="tool_handler",
-        capture_input=False,
-        capture_output=False
-    )
     @abstractmethod
     async def _handle_ai_messages_and_tool_calls(
         cls, 
@@ -42,17 +34,11 @@ class LLMProvider(ABC):
         """
         Handle AI response and tool calls. Implemented by subclasses.
         
-        Traced as TOOL span for tool call handling and execution.
+        Note: Tracing is applied to concrete implementations, not abstract methods.
         """
         pass
 
     @classmethod
-    @trace_method(
-        kind=OpenInferenceSpanKindValues.LLM,
-        graph_node_id="llm_generate_response",
-        capture_input=False,
-        capture_output=False
-    )
     @abstractmethod
     async def generate_response(
         cls, 
@@ -64,17 +50,11 @@ class LLMProvider(ABC):
         """
         Generate a response from the LLM.
         
-        Traced as LLM span for response generation with optional tool calls.
+        Note: Tracing is applied to concrete implementations, not abstract methods.
         """
         pass
 
     @classmethod
-    @trace_method(
-        kind=OpenInferenceSpanKindValues.LLM,
-        graph_node_id="llm_generate_summary",
-        capture_input=False,
-        capture_output=False
-    )
     @abstractmethod
     async def generate_summary_or_chat_name(
         cls, 
@@ -91,7 +71,7 @@ class LLMProvider(ABC):
         Generate a summary and/or chat name based on conversation state.
         Returns tuple of (summary, chat_name) where either can be None.
         
-        Traced as LLM span for summary/chat name generation.
+        Note: Tracing is applied to concrete implementations, not abstract methods.
         """
         pass
 
