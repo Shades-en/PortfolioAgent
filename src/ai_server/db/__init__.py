@@ -4,7 +4,7 @@ from beanie import init_beanie, Document
 from pymongo import AsyncMongoClient
 from opentelemetry.trace import SpanKind
 
-from ai_server.schemas import User, Session, Summary, Turn, Message
+from ai_server.schemas import User, Session, Summary, Message
 from ai_server.utils.tracing import trace_operation, CustomSpanKinds
 
 # All document models to register with Beanie
@@ -12,7 +12,6 @@ DOCUMENT_MODELS: List[Type[Document]] = [
     User,
     Session,
     Summary,
-    Turn,
     Message,
 ]
 
@@ -78,19 +77,15 @@ class MongoDB:
         
         # TODO: READ ABOUT WHY THIS HAPPENS AND IS NEEDED
         # Rebuild models to resolve circular dependencies
-        # Message has Link[Session]
-        # Turn has Link[Session], Link[Summary], List[Link[Message]]
-        # Session imports Message, Turn, Summary
+        # Message has Link[Session], Link[Summary]
+        # Session imports Message, Summary
         # Pass the namespace so forward references can be resolved
-        Message.model_rebuild(_types_namespace={'Session': Session})
-        Turn.model_rebuild(_types_namespace={
+        Message.model_rebuild(_types_namespace={
             'Session': Session,
-            'Summary': Summary,
-            'Message': Message
+            'Summary': Summary
         })
         Session.model_rebuild(_types_namespace={
             'Message': Message,
-            'Turn': Turn,
             'Summary': Summary
         })
         Summary.model_rebuild(_types_namespace={'Session': Session})

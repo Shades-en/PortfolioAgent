@@ -18,7 +18,6 @@ from ai_server.api.exceptions.db_exceptions import (
 )
 from ai_server.utils.tracing import trace_operation, CustomSpanKinds
 from ai_server.schemas.message import Message
-from ai_server.schemas.turn import Turn
 from ai_server.schemas.summary import Summary
 
 
@@ -221,15 +220,13 @@ class User(Document):
                         delete_results = await asyncio.gather(
                             user.delete(session=session_txn),
                             Message.find({"session.user.$id": user.id}).delete(session=session_txn),
-                            Turn.find({"session.user.$id": user.id}).delete(session=session_txn),
                             Summary.find({"session.user.$id": user.id}).delete(session=session_txn),
                             Session.find(Session.user.id == user.id).delete(session=session_txn)
                         )
                         
                         messages_deleted = delete_results[1].deleted_count if delete_results[1] else 0
-                        turns_deleted = delete_results[2].deleted_count if delete_results[2] else 0
-                        summaries_deleted = delete_results[3].deleted_count if delete_results[3] else 0
-                        sessions_deleted = delete_results[4].deleted_count if delete_results[4] else 0
+                        summaries_deleted = delete_results[2].deleted_count if delete_results[2] else 0
+                        sessions_deleted = delete_results[3].deleted_count if delete_results[3] else 0
                     else:
                         # Delete user and sessions in parallel, not their related data
                         delete_results = await asyncio.gather(
@@ -238,14 +235,12 @@ class User(Document):
                         )
                         sessions_deleted = delete_results[1].deleted_count if delete_results[1] else 0
                         messages_deleted = 0
-                        turns_deleted = 0
                         summaries_deleted = 0
                     
                     return {
                         "user_deleted": True,
                         "sessions_deleted": sessions_deleted,
                         "messages_deleted": messages_deleted,
-                        "turns_deleted": turns_deleted,
                         "summaries_deleted": summaries_deleted
                     }
                     

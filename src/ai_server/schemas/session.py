@@ -12,10 +12,8 @@ import asyncio
 from opentelemetry.trace import SpanKind
 
 if TYPE_CHECKING:
-    from pymongo.client_session import ClientSession
     from ai_server.schemas.message import Message
     from ai_server.schemas.summary import Summary
-    from ai_server.schemas.turn import Turn
 
 from ai_server.schemas.user import User
 from ai_server.types.message import MessageDTO
@@ -24,8 +22,7 @@ from ai_server.api.exceptions.db_exceptions import (
     SessionCreationFailedException,
     SessionUpdateFailedException,
     SessionDeletionFailedException,
-    MessageCreationFailedException,
-    TurnCreationFailedException
+    MessageCreationFailedException
 )
 from ai_server.config import DEFAULT_SESSION_NAME, DEFAULT_SESSION_PAGE_SIZE
 from ai_server.utils.tracing import trace_method, trace_operation, CustomSpanKinds
@@ -175,7 +172,7 @@ class Session(Document):
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
     async def delete_with_related(cls, session_id: str) -> dict:
         """
-        Delete session and all related documents (messages, turns, summaries) in a transaction.
+        Delete session and all related documents (messages, summaries) in a transaction.
         This prevents orphaned documents with dangling references.
         
         Args:
@@ -184,7 +181,6 @@ class Session(Document):
         Returns:
             Dictionary with deletion counts: {
                 "messages_deleted": int, 
-                "turns_deleted": int, 
                 "summaries_deleted": int,
                 "session_deleted": bool
             }
@@ -195,7 +191,6 @@ class Session(Document):
         Traced as INTERNAL span for database transaction with cascade delete.
         """
         from ai_server.schemas.message import Message
-        from ai_server.schemas.turn import Turn
         from ai_server.schemas.summary import Summary
         from ai_server.db import MongoDB
         
@@ -205,7 +200,6 @@ class Session(Document):
             if not session:
                 return {
                     "messages_deleted": 0,
-                    "turns_deleted": 0,
                     "summaries_deleted": 0,
                     "session_deleted": False
                 }
@@ -214,21 +208,18 @@ class Session(Document):
             
             async with client.start_session() as session_txn:
                 async with await session_txn.start_transaction():
-                    # Delete session, messages, turns, and summaries in parallel
+                    # Delete session, messages, and summaries in parallel
                     delete_results = await asyncio.gather(
                         session.delete(session=session_txn),
                         Message.find(Message.session.id == obj_id).delete(session=session_txn),
-                        Turn.find(Turn.session.id == obj_id).delete(session=session_txn),
                         Summary.find(Summary.session.id == obj_id).delete(session=session_txn)
                     )
                     
                     messages_deleted = delete_results[1].deleted_count if delete_results[1] else 0
-                    turns_deleted = delete_results[2].deleted_count if delete_results[2] else 0
-                    summaries_deleted = delete_results[3].deleted_count if delete_results[3] else 0
+                    summaries_deleted = delete_results[2].deleted_count if delete_results[2] else 0
                     
                     return {
                         "messages_deleted": messages_deleted,
-                        "turns_deleted": turns_deleted,
                         "summaries_deleted": summaries_deleted,
                         "session_deleted": True
                     }
@@ -239,23 +230,37 @@ class Session(Document):
                 note=f"session_id={session_id}, error={str(e)}"
             )
     
+    @trace_method(
+        kind=SpanKind.INTERNAL,
+        graph_node_id="db_insert_messages",
+        capture_input=False,
+        capture_output=False
+    )
     async def insert_messages(
         self, 
         messages: List[MessageDTO],
-        session: ClientSession | None = None
+        turn_number: int,
+        previous_summary: Summary,
+        regenerated_summary: bool
     ) -> List[Message]:
         """
-        Bulk insert messages for this session.
+        Bulk insert messages for this session with turn information.
+        
+        Since this is a single bulk insert operation, no transaction is needed.
+        MongoDB's insert_many is atomic for a single collection.
         
         Args:
             messages: List of MessageDTO objects to insert
-            session: Optional MongoDB session for transaction support
+            turn_number: The turn number for these messages
+            previous_summary: Optional previous Summary document for this turn
             
         Returns:
             List of inserted Message documents
             
         Raises:
             MessageCreationFailedException: If bulk insert fails
+        
+        Traced as INTERNAL span for database operation.
         """
         if not self.id:
             raise MessageCreationFailedException(
@@ -280,145 +285,31 @@ class Session(Document):
                     function_call=msg_dto.function_call,
                     token_count=msg_dto.token_count,
                     error=msg_dto.error,
+                    turn_number=turn_number,
+                    previous_summary=previous_summary,
                     session=self
                 )
                 message_docs.append(message_doc)
+
+            if regenerated_summary:
+                previous_summary.session = self
             
-            # Bulk insert all messages
-            await Message.insert_many(message_docs, session=session)
+            # Bulk insert all messages (atomic operation)
+            if regenerated_summary:
+                await asyncio.gather(
+                    Message.insert_many(message_docs),
+                    previous_summary.insert()
+                )
+            else:
+                await Message.insert_many(message_docs)
             
             return message_docs
             
         except Exception as e:
             raise MessageCreationFailedException(
                 message="Failed to bulk insert messages for session",
-                note=f"session_id={self.id}, message_count={len(messages)}, error={str(e)}"
+                note=f"session_id={self.id}, turn_number={turn_number}, message_count={len(messages)}, error={str(e)}"
             )
-    
-    async def insert_turn(
-        self,
-        turn_number: int,
-        message_docs: List[Message],
-        summary: Summary | None = None,
-        session: ClientSession | None = None
-    ) -> Turn:
-        """
-        Create and insert a Turn for this session.
-        
-        Args:
-            turn_number: The turn number for this turn
-            message_docs: List of Message documents that belong to this turn
-            summary: Optional Summary document (previous summary for this turn)
-            session: Optional MongoDB session for transaction support
-            
-        Returns:
-            Created Turn document
-            
-        Raises:
-            TurnCreationFailedException: If turn creation fails
-        """
-        if not self.id:
-            raise TurnCreationFailedException(
-                message="Cannot insert turn for unsaved session",
-                note="Session must be saved to database before inserting turns"
-            )
-        
-        if not message_docs:
-            raise TurnCreationFailedException(
-                message="Cannot create turn without messages",
-                note="At least one message is required to create a turn"
-            )
-        
-        try:
-            from ai_server.schemas.turn import Turn
-            # Calculate total token count for the turn
-            turn_token_count = sum(msg.token_count for msg in message_docs)
-            
-            # Create turn document
-            new_turn = Turn(
-                turn_number=turn_number,
-                session=self,
-                turn_token_count=turn_token_count,
-                previous_summary=summary,
-                messages=message_docs
-            )
-            
-            await new_turn.insert(session=session)
-            return new_turn
-            
-        except Exception as e:
-            raise TurnCreationFailedException(
-                message="Failed to create turn for session",
-                note=f"session_id={self.id}, turn_number={turn_number}, message_count={len(message_docs)}, error={str(e)}"
-            )
-    
-    @trace_method(
-        kind=SpanKind.INTERNAL,
-        graph_node_id="db_insert_messages_and_turn",
-        capture_input=False,
-        capture_output=False
-    )
-    async def insert_messages_and_turn(
-        self,
-        turn_number: int,
-        messages: List[MessageDTO],
-        summary: Summary | None = None
-    ) -> tuple[List[Message], Turn]:
-        """
-        Insert messages and create a turn atomically in a single transaction.
-        
-        Args:
-            turn_number: The turn number for this turn
-            messages: List of MessageDTO objects to insert
-            summary: Optional Summary document (previous summary for this turn)
-            
-        Returns:
-            Tuple of (inserted Message documents, created Turn document)
-            
-        Raises:
-            MessageCreationFailedException: If message insertion fails
-            TurnCreationFailedException: If turn creation fails
-        
-        Traced as INTERNAL span for database transaction.
-        """
-        from ai_server.db import MongoDB
-
-        if not self.id:
-            raise TurnCreationFailedException(
-                message="Cannot insert messages and turn for unsaved session",
-                note="Session must be saved to database before inserting messages and turns"
-            )
-        
-        if not messages:
-            raise MessageCreationFailedException(
-                message="Cannot create turn without messages",
-                note="At least one message is required to create a turn"
-            )
-        
-        client = MongoDB.get_client()
-        
-        async with client.start_session() as session_txn:
-            try:
-                async with await session_txn.start_transaction():
-                    # Insert messages using the existing method
-                    message_docs = await self.insert_messages(messages, session=session_txn)
-                    
-                    # Insert turn using the existing method
-                    new_turn = await self.insert_turn(
-                        turn_number=turn_number,
-                        message_docs=message_docs,
-                        summary=summary,
-                        session=session_txn
-                    )
-                    
-                    return message_docs, new_turn
-                    
-            except Exception as e:
-                # Transaction will automatically abort on exception
-                raise TurnCreationFailedException(
-                    message="Failed to insert messages and turn in transaction",
-                    note=f"session_id={self.id}, turn_number={turn_number}, message_count={len(messages)}, error={str(e)}"
-                )
     
     @classmethod
     async def get_paginated_by_user_cookie(

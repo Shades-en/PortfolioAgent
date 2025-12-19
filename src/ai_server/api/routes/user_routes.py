@@ -19,7 +19,8 @@ async def get_user(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        return user.model_dump()
+        # Use mode='json' to properly serialize ObjectId and datetime fields
+        return user.model_dump(mode='json')
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

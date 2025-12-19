@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Query
-from typing import List
 
 from ai_server.api.services import SessionService
 from ai_server.config import (
@@ -16,10 +15,16 @@ async def get_session_messages(
     session_id: str,
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(default=DEFAULT_MESSAGE_PAGE_SIZE, ge=1, le=MAX_MESSAGE_PAGE_SIZE, description="Number of messages per page")
-) -> List[dict]:
+) -> dict:
     """
     Get paginated messages for a session.
     Returns most recent messages in chronological order (oldest to newest).
+    
+    Returns:
+        {
+            "count": int,
+            "results": List[dict]
+        }
     """
     return await SessionService.get_session_messages(
         session_id=session_id,
@@ -28,10 +33,16 @@ async def get_session_messages(
     )
 
 @router.get("/sessions/{session_id}/messages/all", tags=["Session"])
-async def get_all_session_messages(session_id: str) -> List[dict]:
+async def get_all_session_messages(session_id: str) -> dict:
     """
     Get all messages for a session in chronological order (oldest to newest).
     Warning: This may return a large amount of data for sessions with many messages.
+    
+    Returns:
+        {
+            "count": int,
+            "results": List[dict]
+        }
     """
     return await SessionService.get_all_session_messages(session_id=session_id)
 
@@ -40,10 +51,16 @@ async def get_user_sessions(
     cookie_id: str = Query(..., description="User's cookie ID"),
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(default=DEFAULT_SESSION_PAGE_SIZE, ge=1, le=MAX_SESSION_PAGE_SIZE, description="Number of sessions per page")
-) -> List[dict]:
+) -> dict:
     """
     Get paginated sessions for a user by cookie ID.
     Returns sessions sorted by most recent first.
+    
+    Returns:
+        {
+            "count": int,
+            "results": List[dict]
+        }
     """
     return await SessionService.get_user_sessions(
         cookie_id=cookie_id,
@@ -54,11 +71,17 @@ async def get_user_sessions(
 @router.get("/sessions/all", tags=["Session"])
 async def get_all_user_sessions(
     cookie_id: str = Query(..., description="User's cookie ID")
-) -> List[dict]:
+) -> dict:
     """
     Get all sessions for a user by cookie ID.
     Returns all sessions sorted by most recent first.
     Warning: This may return a large amount of data for users with many sessions.
+    
+    Returns:
+        {
+            "count": int,
+            "results": List[dict]
+        }
     """
     return await SessionService.get_all_user_sessions(cookie_id=cookie_id)
 

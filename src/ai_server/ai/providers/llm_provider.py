@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict
 
-from ai_server.types.message import MessageDTO, FunctionCallRequest
+from ai_server import config
+from ai_server.schemas.summary import Summary
+from ai_server.types.message import MessageDTO, FunctionCallRequest, Role
 from ai_server.ai.tools.tools import Tool
 from ai_server.config import BASE_MODEL
 
@@ -93,3 +95,60 @@ class LLMProvider(ABC):
             if tool.name == function_call_request.name:
                 return await tool(tool.Arguments(**function_call_request.arguments))
         return ""
+    
+    @classmethod
+    async def mock_generate_response(cls) -> tuple[List[MessageDTO], bool]:
+        """
+        Mock implementation of generate_response for testing purposes.
+        Returns a dummy AI message with random content and tool_call as False.
+        
+        Returns:
+            Tuple of ([MessageDTO], False) where MessageDTO contains dummy content
+        """
+        mock_message = MessageDTO(
+            role=Role.AI,
+            content="This is a mock AI response. The actual LLM call has been bypassed for testing purposes.",
+            metadata={"mock": True}
+        )
+        
+        return [mock_message], False
+    
+    @classmethod
+    async def mock_generate_summary_or_chat_name(
+        cls,
+        query: str,
+        new_chat: bool = False,
+        turns_after_last_summary: int = 0,
+        turn_number: int = 1,
+    ) -> tuple[str | None, str | None]:
+        """
+        Mock implementation of generate_summary_or_chat_name for testing purposes.
+        Returns dummy summary and chat name without making actual LLM calls.
+        
+        Args:
+            new_chat: Whether this is a new chat (used to determine chat name generation)
+            query: Current user query (used in mock chat name)
+            
+        Returns:
+            Tuple of (summary, chat_name) where:
+            - summary: Mock summary string
+            - chat_name: Mock chat name or None (generated for new chats)
+        """
+        # Generate mock summary
+        if config.MOCK_AI_SUMMARY:
+            mock_summary = "Mock summary: This is a test summary of the conversation without actual LLM processing."
+            mock_summary = Summary(
+                content=mock_summary,
+                end_turn_number=turn_number-1,
+                start_turn_number=turn_number-turns_after_last_summary # This should be previous summary end turn number + 1
+            )
+        else:
+            mock_summary = None
+        # Generate mock chat name for new chats
+        mock_chat_name = None
+        if new_chat and config.MOCK_AI_CHAT_NAME:
+            # Use first few words of query for chat name
+            query_words = query.split()[:3]
+            mock_chat_name = f"Mock Chat: {' '.join(query_words)}"
+        
+        return mock_summary, mock_chat_name

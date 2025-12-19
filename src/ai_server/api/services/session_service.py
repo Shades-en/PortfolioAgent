@@ -1,5 +1,3 @@
-from typing import List
-
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
@@ -16,7 +14,7 @@ class SessionService:
         session_id: str,
         page: int = 1,
         page_size: int = DEFAULT_MESSAGE_PAGE_SIZE
-    ) -> List[dict]:
+    ) -> dict:
         """
         Get paginated messages for a session.
         Returns most recent messages in chronological order (oldest to newest).
@@ -27,7 +25,10 @@ class SessionService:
             page_size: Number of messages per page
             
         Returns:
-            List of message dictionaries in chronological order
+            Dictionary with count and results: {
+                "count": int,
+                "results": List[dict]
+            }
         
         Traced as CHAIN span for service-level orchestration.
         """
@@ -36,11 +37,16 @@ class SessionService:
             page=page,
             page_size=page_size
         )
-        return [msg.model_dump() for msg in messages]
+        # Use mode='json' to serialize ObjectIds and exclude Link fields
+        results = [msg.model_dump(mode='json', exclude={'session', 'previous_summary'}) for msg in messages]
+        return {
+            "count": len(results),
+            "results": results
+        }
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def get_all_session_messages(cls, session_id: str) -> List[dict]:
+    async def get_all_session_messages(cls, session_id: str) -> dict:
         """
         Get all messages for a session in chronological order (oldest to newest).
         
@@ -48,12 +54,20 @@ class SessionService:
             session_id: The session ID
             
         Returns:
-            List of all message dictionaries in chronological order
+            Dictionary with count and results: {
+                "count": int,
+                "results": List[dict]
+            }
         
         Traced as CHAIN span for service-level orchestration.
         """
         messages = await Message.get_all_by_session(session_id=session_id)
-        return [msg.model_dump() for msg in messages]
+        # Use mode='json' to serialize ObjectIds and exclude Link fields
+        results = [msg.model_dump(mode='json', exclude={'session', 'previous_summary'}) for msg in messages]
+        return {
+            "count": len(results),
+            "results": results
+        }
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -62,7 +76,7 @@ class SessionService:
         cookie_id: str,
         page: int = 1,
         page_size: int = DEFAULT_SESSION_PAGE_SIZE
-    ) -> List[dict]:
+    ) -> dict:
         """
         Get paginated sessions for a user by cookie ID, sorted by most recent first.
         
@@ -72,7 +86,10 @@ class SessionService:
             page_size: Number of sessions per page
             
         Returns:
-            List of session dictionaries sorted by most recent first
+            Dictionary with count and results: {
+                "count": int,
+                "results": List[dict]
+            }
         
         Traced as CHAIN span for service-level orchestration.
         """
@@ -81,11 +98,16 @@ class SessionService:
             page=page,
             page_size=page_size
         )
-        return [session.model_dump() for session in sessions]
+        # Use mode='json' to serialize ObjectIds and exclude Link fields
+        results = [session.model_dump(mode='json', exclude={'user'}) for session in sessions]
+        return {
+            "count": len(results),
+            "results": results
+        }
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def get_all_user_sessions(cls, cookie_id: str) -> List[dict]:
+    async def get_all_user_sessions(cls, cookie_id: str) -> dict:
         """
         Get all sessions for a user by cookie ID, sorted by most recent first.
         
@@ -93,12 +115,20 @@ class SessionService:
             cookie_id: The user's cookie ID
             
         Returns:
-            List of all session dictionaries sorted by most recent first
+            Dictionary with count and results: {
+                "count": int,
+                "results": List[dict]
+            }
         
         Traced as CHAIN span for service-level orchestration.
         """
         sessions = await Session.get_all_by_user_cookie(cookie_id=cookie_id)
-        return [session.model_dump() for session in sessions]
+        # Use mode='json' to serialize ObjectIds and exclude Link fields
+        results = [session.model_dump(mode='json', exclude={'user'}) for session in sessions]
+        return {
+            "count": len(results),
+            "results": results
+        }
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)

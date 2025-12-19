@@ -10,7 +10,7 @@ class MessageService:
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def delete_message(cls, message_id: str) -> dict:
         """
-        Delete a message by its ID and remove its reference from any Turn.
+        Delete a message by its ID.
         
         Args:
             message_id: The message ID to delete
@@ -18,7 +18,7 @@ class MessageService:
         Returns:
             Dictionary with deletion info: {
                 "message_deleted": bool,
-                "turns_updated": int
+                "deleted_count": int
             }
         
         Traced as CHAIN span for service-level orchestration.

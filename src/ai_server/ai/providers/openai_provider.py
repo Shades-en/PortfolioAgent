@@ -7,6 +7,7 @@ from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
 from ai_server.ai.prompts.chat_name import CHAT_NAME_SYSTEM_PROMPT, CHAT_NAME_USER_PROMPT
 
+from ai_server.schemas.summary import Summary
 from ai_server.utils.general import get_env_int, get_token_count
 from ai_server.utils.tracing import trace_method
 from ai_server.types.message import MessageDTO, Role, FunctionCallRequest
@@ -234,6 +235,11 @@ class OpenAIProvider(LLMProvider, ABC):
             )
             if should_summarize:
                 summary = await cls._summarise(conversation_to_summarize, previous_summary)
+                summary = Summary(
+                    content=summary, 
+                    end_turn_number=turn_number-1,
+                    start_turn_number=turn_number-turns_after_last_summary # This should be previous summary end turn number + 1
+                )
         
         # Generate chat name (not during tool calls)
         if not tool_call:
@@ -243,7 +249,6 @@ class OpenAIProvider(LLMProvider, ABC):
             elif turn_number % TURNS_BETWEEN_CHAT_NAME == 0:
                 # Existing chat: generate name periodically with context
                 chat_name = await cls._generate_chat_name(query, previous_summary)
-        
         return summary, chat_name
     
     @classmethod
@@ -312,9 +317,6 @@ class OpenAIProvider(LLMProvider, ABC):
         
         Args:
             instructions: Base system prompt (e.g., "You are a helpful assistant.")
-            user_id: User identifier
-            session_id: Session identifier
-            turn_id: Turn identifier
             summary: Optional summary of earlier conversation to include
             metadata: Optional metadata dict
             

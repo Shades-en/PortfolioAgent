@@ -27,6 +27,7 @@ class QueryResult:
     summary: Summary | None
     chat_name: str | None
     fallback: bool
+    regenerated_summary: bool
 
 class Runner:
     def __init__(self, agent: Agent, session_manager: SessionManager) -> None:
@@ -71,6 +72,19 @@ class Runner:
         
         Traced as INTERNAL span for parallel LLM operations.
         """
+        # Use mock methods if MOCK_AI_RESPONSE is enabled
+        if config.MOCK_AI_RESPONSE:
+            return await asyncio.gather(
+                self.llm_provider.mock_generate_response(),
+                self.llm_provider.mock_generate_summary_or_chat_name(
+                    query=query,
+                    new_chat=self.session_manager.state.new_chat,
+                    turns_after_last_summary=self.session_manager.state.turns_after_last_summary,
+                    turn_number=self.session_manager.state.turn_number
+                ),
+            )
+        
+        # Use real LLM methods
         return await asyncio.gather(
             self.llm_provider.generate_response(
                 conversation_history=conversation_history,
@@ -149,13 +163,19 @@ class Runner:
                         )
                 # If new summary is generated it means that the current turn's previous conversation is now the new summary
                 # This is because new summary encapsulates all information from the previous conversation except the current turn
-                turn_previous_summary = new_summary or summary
+                
+                turn_previous_summary = summary
+                regenerated_summary = False
+                if new_summary:
+                    turn_previous_summary = new_summary
+                    regenerated_summary = True
 
             return QueryResult(
                 messages=[user_query_message, *messages],
                 summary=turn_previous_summary,
                 chat_name=chat_name,
-                fallback=False
+                fallback=False,
+                regenerated_summary=regenerated_summary
             )
         except Exception as e:
             logger.error(f"Error in _handle_query: {e}")
@@ -172,7 +192,8 @@ class Runner:
                 messages=fallback_messages,
                 summary=previous_summary,
                 chat_name=chat_name,
-                fallback=True
+                fallback=True,
+                regenerated_summary=False
             )
 
     # Incase in future if handoff is required then make sure this function is retriggered
@@ -185,7 +206,8 @@ class Runner:
         await self.session_manager.update_user_session(
             messages=result.messages,
             summary=result.summary,
-            chat_name=result.chat_name
+            chat_name=result.chat_name,
+            regenerated_summary=result.regenerated_summary
         )
         
         return {
@@ -196,11 +218,19 @@ class Runner:
 
 
 # Test scenarios
-# 1. Token related summary generation
-# 2. Token related chat name generation
-# 3. Turn related summary generation
-# 4. Turn related chat name generation
-# 5. Test other routes like users, sessions, turns, summaries
+# 3. why is user ref being stored in a different manner and session ref (in message) is stored in a different manner - id field, may need to update index accordingly - both summary and message
+#    1. Summary may also be impacted by 
+#.   2. My suspicion is on optional field as Message had it before
+#.   3. Update indexes to match either $ or underscore
+# 4. Validate the previous summaries end turn number + 1 = current summary start turn number
+
+
+
+# 2. Token related summary generation
+# 3. Token related chat name generation
+# 4. Turn related summary generation
+# 5. Turn related chat name generation
+# 6. Test other routes like users, sessions, turns, summaries
 # 6. Test toolcalls
 
 

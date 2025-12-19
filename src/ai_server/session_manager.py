@@ -6,7 +6,7 @@ import logging
 
 from ai_server.types.state import State
 from ai_server.types.message import MessageDTO, FunctionCallRequest
-from ai_server.schemas import User, Session, Turn, Summary, Role
+from ai_server.schemas import User, Session, Message, Summary, Role
 from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 from ai_server.api.exceptions.db_exceptions import SessionNotFoundException
@@ -44,6 +44,8 @@ class SessionManager():
         new_user: bool,
         state: dict
     ) -> State:
+        if new_chat:
+            turn_number = 1
         state = State(
             turn_number=turn_number,
             new_chat=new_chat,
@@ -84,27 +86,28 @@ class SessionManager():
         capture_input=False,
         capture_output=False
     )
-    async def _fetch_context(self) -> Tuple[List[Turn], Summary | None]:
+    async def _fetch_context(self) -> Tuple[List[Message], Summary | None]:
         """
-        Fetch the latest N turns and the latest summary in parallel.
+        Fetch the latest N turns (as messages) and the latest summary in parallel.
         
         Returns:
-            Tuple of (turns, summary) where turns is a list of Turn objects
-            and summary is the latest Summary or None.
+            Tuple of (messages, summary) where messages is a list of Message objects
+            from the latest turns and summary is the latest Summary or None.
         
-        Traced as INTERNAL span for database fetch operations.
+        Traced as DATABASE span for database fetch operations.
         """
-        if self.state.new_chat or not self.session:
+        if self.state.new_chat or not self.session_id:
             return [], None
         
-        turns_task = Turn.get_latest_by_session(
-            session_id=str(self.session.id),
-            limit=MAX_TURNS_TO_FETCH
+        messages_task = Message.get_latest_by_session(
+            session_id=str(self.session_id),
+            current_turn_number=self.state.turn_number,
+            max_turns=MAX_TURNS_TO_FETCH,
         )
-        summary_task = Summary.get_latest_by_session(session_id=str(self.session.id))
+        summary_task = Summary.get_latest_by_session(session_id=str(self.session_id))
         
-        turns, summary = await asyncio.gather(turns_task, summary_task)
-        return turns, summary
+        messages, summary = await asyncio.gather(messages_task, summary_task)
+        return messages, summary
 
     def update_state(self, **kwargs) -> None:
         """
@@ -123,53 +126,26 @@ class SessionManager():
                 # Track state change in current span
                 track_state_change(key, old_value, value)
 
-    def _parse_message_dict_to_message(self, message_dict: dict) -> MessageDTO:
+    def _convert_messages_to_dtos(self, messages: List[Message]) -> List[MessageDTO]:
         """
-        Parse a message dictionary to a MessageDTO object.
+        Convert Message documents to MessageDTO objects.
         
         Args:
-            message_dict: Dictionary containing message data from DB
+            messages: List of Message documents (already sorted chronologically)
             
         Returns:
-            MessageDTO object for in-memory use
+            List of MessageDTO objects in chronological order
         """
-        try:
-            # Parse function_call if present
-            function_call = None
-            if message_dict.get("function_call"):
-                function_call = FunctionCallRequest(**message_dict["function_call"])
-            
-            return MessageDTO(
-                role=message_dict.get("role"),
-                tool_call_id=message_dict.get("tool_call_id", "null"),
-                metadata=message_dict.get("metadata", {}),
-                content=message_dict.get("content"),
-                function_call=function_call,
-                token_count=message_dict.get("token_count", 0),
-                created_at=message_dict.get("created_at"),
+        return [
+            MessageDTO(
+                role=msg.role,
+                tool_call_id=msg.tool_call_id,
+                metadata=msg.metadata,
+                content=msg.content,
+                function_call=msg.function_call
             )
-        except (ValidationError, ValueError) as e:
-            raise MessageParseException(
-                message="Failed to parse message dictionary to MessageDTO",
-                note=f"message_dict={message_dict}, error={str(e)}"
-            )
-
-    def _extract_messages_from_turns(self, turns: List[dict]) -> List[MessageDTO]:
-        """
-        Extract all messages from turns and convert to MessageDTO objects in chronological order.
-        
-        Args:
-            turns: List of turn dictionaries (already sorted chronologically)
-            
-        Returns:
-            Flat list of MessageDTO objects in chronological order
-        """
-        messages = []
-        for turn in turns:
-            message_dicts = turn.get("messages", [])
-            for msg_dict in message_dicts:
-                messages.append(self._parse_message_dict_to_message(msg_dict))
-        return messages
+            for msg in messages
+        ]
 
     @trace_method(
         kind=CustomSpanKinds.DATABASE.value,
@@ -179,11 +155,11 @@ class SessionManager():
     )
     async def get_context_and_update_state(self) -> Tuple[List[MessageDTO], Summary | None]:
         """
-        Fetch context (turns + summary) and user/session in parallel, then update state.
+        Fetch context (messages + summary) and user/session in parallel, then update state.
         
         Algorithm:
-        1. Fetch turns after summary.end_turn_number and calculate total tokens
-        2. If tokens < MAX_TOKEN_THRESHOLD, fetch additional older turns until threshold met
+        1. Fetch messages from latest turns and calculate tokens after summary
+        2. If tokens < MAX_TOKEN_THRESHOLD, include additional older messages until threshold met
         3. Update state with turns_after_last_summary, total_token_after_last_summary, active_summary
         4. Return messages in chronological order with summary
         
@@ -195,35 +171,37 @@ class SessionManager():
         # Fetch context and user/session in parallel
         context_task = self._fetch_context()
         user_or_session_task = self._fetch_user_or_session()
-        (all_turns, summary), _ = await asyncio.gather(context_task, user_or_session_task)
+        (all_messages, summary), _ = await asyncio.gather(context_task, user_or_session_task)
         
-        if not all_turns:
+        if not all_messages:
             return [], summary
         
-        # Reverse to get chronological order (DB returns descending)
-        all_turns.reverse()
+        # Messages are already in chronological order from get_latest_by_session
         
         # Determine the start point based on summary
         end_turn_number = summary.end_turn_number if summary else 0
         
-        # Step 1: Get turns after summary (end_turn_number + 1 to current)
-        turns_after_summary = [t for t in all_turns if t["turn_number"] > end_turn_number]
+        # Step 1: Get messages after summary (end_turn_number + 1 to current)
+        messages_after_summary = [m for m in all_messages if m.turn_number > end_turn_number]
+        
+        # Count unique turns after summary
+        turns_after_summary = {m.turn_number for m in messages_after_summary}
         turns_after_last_summary = len(turns_after_summary)
-        total_token_after_last_summary = sum(t["turn_token_count"] for t in turns_after_summary)
+        total_token_after_last_summary = sum(m.token_count for m in messages_after_summary)
         
-        # Step 2: Collect context turns - start with turns after summary
-        context_turns = turns_after_summary.copy()
+        # Step 2: Collect context messages - start with messages after summary
+        context_messages = messages_after_summary.copy()
         
-        # Step 3 & 4: If tokens < threshold, fetch additional older turns
+        # Step 3 & 4: If tokens < threshold, fetch additional older messages
         if total_token_after_last_summary < MAX_TOKEN_THRESHOLD:
-            # Get turns at or before end_turn_number (older turns)
-            older_turns = [t for t in all_turns if t["turn_number"] <= end_turn_number]
+            # Get messages at or before end_turn_number (older messages)
+            older_messages = [m for m in all_messages if m.turn_number <= end_turn_number]
             # Reverse to process from most recent to oldest
-            older_turns.reverse()
+            older_messages.reverse()
             
-            for turn in older_turns:
-                total_token_after_last_summary += turn["turn_token_count"]
-                context_turns.insert(0, turn)  # Insert at beginning to maintain order
+            for message in older_messages:
+                total_token_after_last_summary += message.token_count
+                context_messages.insert(0, message)  # Insert at beginning to maintain order
                 if total_token_after_last_summary >= MAX_TOKEN_THRESHOLD:
                     break
         
@@ -234,10 +212,10 @@ class SessionManager():
             active_summary=summary
         )
         
-        # Extract messages from turns
-        messages = self._extract_messages_from_turns(context_turns)
+        # Convert Message documents to MessageDTOs
+        message_dtos = self._convert_messages_to_dtos(context_messages)
         
-        return messages, summary
+        return message_dtos, summary
     
     def create_fallback_messages(self, user_query_dto: MessageDTO) -> List[MessageDTO]:
         """
@@ -273,7 +251,8 @@ class SessionManager():
         self, 
         messages: List[MessageDTO], 
         summary: Summary | None, 
-        chat_name: str | None
+        chat_name: str | None,
+        regenerated_summary: bool
     ) -> None:
         # Track if session existed before this method (for parallel name update logic)
         session_existed = self.session is not None
@@ -297,29 +276,31 @@ class SessionManager():
             else:
                 self.session = await Session.create_for_existing_user(user=self.user)
         
-        # Insert messages and turn for the session
+        # Insert messages for the session
         if self.session:
             turn_number = self.state.turn_number
             try:
-                # Run message/turn insertion and name update in parallel for existing sessions
+                # Run message insertion and name update in parallel for existing sessions
                 # Scenario: New session with chat_name - It will again try to set it up so only set name when it was originally an existing session
                 if session_existed and chat_name:
                     await asyncio.gather(
-                        self.session.insert_messages_and_turn(
-                            turn_number=turn_number,
+                        self.session.insert_messages(
                             messages=messages,
-                            summary=summary
+                            turn_number=turn_number,
+                            previous_summary=summary,
+                            regenerated_summary=regenerated_summary
                         ),
                         self.session.update_name(chat_name)
                     )
                 else:
-                    await self.session.insert_messages_and_turn(
-                        turn_number=turn_number,
+                    await self.session.insert_messages(
                         messages=messages,
-                        summary=summary
+                        turn_number=turn_number,
+                        previous_summary=summary,
+                        regenerated_summary=regenerated_summary
                     )
             except Exception as e:
-                logger.error(f"Failed to insert messages and turn for session {self.session_id}: {str(e)}")
+                logger.error(f"Failed to insert messages for session {self.session_id}: {str(e)}")
                 # If insertion fails, still save user message and error response
                 if not messages:
                     return
@@ -327,10 +308,11 @@ class SessionManager():
                 # Create fallback messages with error response
                 fallback_messages = self.create_fallback_messages(messages[0])
                 
-                await self.session.insert_messages_and_turn(
-                    turn_number=turn_number,
+                await self.session.insert_messages(
                     messages=fallback_messages,
-                    summary=summary
+                    turn_number=turn_number,
+                    previous_summary=summary,
+                    regenerated_summary=regenerated_summary
                 )
 
     

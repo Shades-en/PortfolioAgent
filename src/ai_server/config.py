@@ -34,6 +34,9 @@ SKIP_CACHE = _env_flag("SKIP_CACHE", False)
 # LLM Providers
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", OPENAI)
 CHAT_COMPLETION = _env_flag("CHAT_COMPLETION", False)
+MOCK_AI_RESPONSE = _env_flag("MOCK_AI_RESPONSE", False)
+MOCK_AI_CHAT_NAME = _env_flag("MOCK_AI_CHAT_NAME", False)
+MOCK_AI_SUMMARY = _env_flag("MOCK_AI_SUMMARY", False)
 
 # AGENT
 MAX_STEPS = 10
