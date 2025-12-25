@@ -14,6 +14,9 @@ import json
 from typing import Mapping, Any, Callable
 import logging
 
+from beanie import PydanticObjectId
+from bson import ObjectId
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -186,6 +189,8 @@ def _serialize_for_json(obj):
         return obj.value
     elif isinstance(obj, (datetime, date)):
         return obj.isoformat()
+    elif isinstance(obj, (ObjectId, PydanticObjectId)):
+        return str(obj)
     elif hasattr(obj, 'model_dump'):
         return obj.model_dump()
     elif isinstance(obj, dict):
@@ -479,7 +484,7 @@ def trace_method(
                         
                     except Exception as e:
                         error_msg = str(e) if str(e) else type(e).__name__
-                        span.set_status(Status(StatusCode.ERROR, error_msg))
+                        span.set_status(Status(StatusCode.ERROR, str(error_msg)))
                         span.record_exception(e)
                         raise
                 
@@ -577,7 +582,7 @@ def trace_operation(
                     
                 except Exception as e:
                     error_msg = str(e) if str(e) else type(e).__name__
-                    span.set_status(Status(StatusCode.ERROR, error_msg))
+                    span.set_status(Status(StatusCode.ERROR, str(error_msg)))
                     span.record_exception(e)
                     raise
         

@@ -5,6 +5,11 @@ from opentelemetry.trace import SpanKind
 from ai_server import config
 from ai_server.ai.agents.agent import Agent
 from ai_server.ai.providers import get_llm_provider
+from ai_server.api.exceptions.db_exceptions import (
+    SessionNotFoundException,
+    UserNotFoundException,
+    MessageRetrievalFailedException,
+)
 from ai_server.types.message import MessageDTO, Role
 from ai_server.schemas import Summary
 from ai_server.session_manager import SessionManager
@@ -177,6 +182,8 @@ class Runner:
                 fallback=False,
                 regenerated_summary=regenerated_summary
             )
+        except (SessionNotFoundException, UserNotFoundException, MessageRetrievalFailedException) as e:
+            raise e
         except Exception as e:
             logger.error(f"Error in _handle_query: {e}")
             fallback_messages = self.session_manager.create_fallback_messages(user_query_message)
@@ -184,7 +191,7 @@ class Runner:
             # Try to get summary: use existing, fetch from DB, or None
             previous_summary = summary
             if not previous_summary and self.session_manager.session:
-                previous_summary = Summary.get_latest_by_session(
+                previous_summary = await Summary.get_latest_by_session(
                     session_id=str(self.session_manager.session.id)
                 )
             
@@ -211,17 +218,20 @@ class Runner:
         )
         
         return {
-            "messages": [msg.model_dump() for msg in result.messages],
-            "summary": result.summary.model_dump() if result.summary else None,
+            "messages": [
+                msg.model_dump(mode='json', exclude={"session", "previous_summary"})
+                for msg in result.messages
+            ],
+            "summary": (
+                result.summary.model_dump(mode='json', exclude={"session"})
+                if result.summary
+                else None
+            ),
             "chat_name": result.chat_name
         }
 
 
 # Test scenarios
-# 3. why is user ref being stored in a different manner and session ref (in message) is stored in a different manner - id field, may need to update index accordingly - both summary and message
-#    1. Summary may also be impacted by 
-#.   2. My suspicion is on optional field as Message had it before
-#.   3. Update indexes to match either $ or underscore
 # 4. Validate the previous summaries end turn number + 1 = current summary start turn number
 
 

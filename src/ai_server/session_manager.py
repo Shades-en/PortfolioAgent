@@ -1,15 +1,16 @@
 import asyncio
 from typing import List, Tuple
-from pydantic import ValidationError
 
 import logging
 
 from ai_server.types.state import State
-from ai_server.types.message import MessageDTO, FunctionCallRequest
+from ai_server.types.message import MessageDTO
 from ai_server.schemas import User, Session, Message, Summary, Role
 from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD
-from ai_server.api.exceptions.schema_exceptions import MessageParseException
-from ai_server.api.exceptions.db_exceptions import SessionNotFoundException
+from ai_server.api.exceptions.db_exceptions import (
+    SessionNotFoundException,
+    UserNotFoundException,
+)
 from ai_server.utils.tracing import trace_method, track_state_change, CustomSpanKinds
 
 logger = logging.getLogger(__name__)
@@ -70,15 +71,20 @@ class SessionManager():
         if self.state.new_chat:
             # Existing user, new chat - fetch user only
             self.user = await User.get_by_id_or_cookie(self.user_id, self.user_cookie)
+            if not self.user:
+                raise UserNotFoundException(
+                    message="User not found for provided identifiers",
+                    note=f"user_id={self.user_id}, user_cookie={self.user_cookie}"
+                )
         else:
             # Existing user, existing chat - fetch session only s
             if self.session_id:
                 self.session = await Session.get_by_id(self.session_id)
-                if not self.session:
-                    raise SessionNotFoundException(
-                        message=f"Session not found for session_id: {self.session_id}",
-                        note=f"session_id={self.session_id}"
-                    )
+            if not self.session:
+                raise SessionNotFoundException(
+                    message=f"Session not found for session_id: {self.session_id}",
+                    note=f"session_id={self.session_id}"
+                )
 
     @trace_method(
         kind=CustomSpanKinds.DATABASE.value,
@@ -280,6 +286,11 @@ class SessionManager():
         if self.session:
             turn_number = self.state.turn_number
             try:
+                if regenerated_summary:
+                    await Summary.create_with_session(
+                        session=self.session,
+                        summary=summary
+                    )
                 # Run message insertion and name update in parallel for existing sessions
                 # Scenario: New session with chat_name - It will again try to set it up so only set name when it was originally an existing session
                 if session_existed and chat_name:
@@ -288,7 +299,6 @@ class SessionManager():
                             messages=messages,
                             turn_number=turn_number,
                             previous_summary=summary,
-                            regenerated_summary=regenerated_summary
                         ),
                         self.session.update_name(chat_name)
                     )
@@ -297,7 +307,6 @@ class SessionManager():
                         messages=messages,
                         turn_number=turn_number,
                         previous_summary=summary,
-                        regenerated_summary=regenerated_summary
                     )
             except Exception as e:
                 logger.error(f"Failed to insert messages for session {self.session_id}: {str(e)}")
@@ -312,7 +321,6 @@ class SessionManager():
                     messages=fallback_messages,
                     turn_number=turn_number,
                     previous_summary=summary,
-                    regenerated_summary=regenerated_summary
                 )
 
     

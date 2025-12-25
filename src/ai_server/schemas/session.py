@@ -241,7 +241,6 @@ class Session(Document):
         messages: List[MessageDTO],
         turn_number: int,
         previous_summary: Summary,
-        regenerated_summary: bool
     ) -> List[Message]:
         """
         Bulk insert messages for this session with turn information.
@@ -291,17 +290,8 @@ class Session(Document):
                 )
                 message_docs.append(message_doc)
 
-            if regenerated_summary:
-                previous_summary.session = self
-            
             # Bulk insert all messages (atomic operation)
-            if regenerated_summary:
-                await asyncio.gather(
-                    Message.insert_many(message_docs),
-                    previous_summary.insert()
-                )
-            else:
-                await Message.insert_many(message_docs)
+            await Message.insert_many(message_docs)
             
             return message_docs
             
