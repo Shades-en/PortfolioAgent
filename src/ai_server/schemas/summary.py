@@ -50,7 +50,7 @@ class Summary(Document):
         
         try:
             return await cls.find(
-                cls.session.id == ObjectId(session_id)
+                cls.session._id == ObjectId(session_id)
             ).sort(-cls.created_at).first_or_none()
         except Exception as e:
             raise SummaryRetrievalFailedException(

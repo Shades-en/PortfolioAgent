@@ -122,7 +122,7 @@ class OpenAIProvider(LLMProvider, ABC):
     async def generate_response(
         cls, 
         conversation_history: List[MessageDTO], 
-        tools: List[Tool] = [], 
+        tools: List[Tool] = [],
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL
     ) -> tuple[List[MessageDTO], bool]:

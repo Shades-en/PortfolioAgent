@@ -42,8 +42,13 @@ class Message(Document):
         indexes = [
             # For chronological queries and pagination
             [("session._id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)],
-            # For turn-based range queries (get_latest_by_session)
-            [("session._id", pymongo.ASCENDING), ("turn_number", pymongo.ASCENDING), ("created_at", pymongo.ASCENDING)]
+            # For turn-based range queries (get_latest_by_session) with role tie-breaker
+            [
+                ("session._id", pymongo.ASCENDING),
+                ("turn_number", pymongo.ASCENDING),
+                ("created_at", pymongo.ASCENDING),
+                ("role", pymongo.DESCENDING)
+            ]
         ]
     
     @model_validator(mode="after")
@@ -166,7 +171,8 @@ class Message(Document):
                 cls.session._id == ObjectId(session_id),
                 cls.turn_number >= min_turn_number
             ).sort(
-                +cls.created_at  # Ascending order (oldest first)
+                +cls.created_at,  # Ascending order (oldest first)
+                -cls.role  # Ensure human messages precede ai when timestamps match
             ).to_list()
             
             # Validate: ensure current_turn_number is greater than latest fetched turn

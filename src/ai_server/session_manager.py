@@ -259,7 +259,7 @@ class SessionManager():
         summary: Summary | None, 
         chat_name: str | None,
         regenerated_summary: bool
-    ) -> None:
+    ) -> List[MessageDTO]:
         # Track if session existed before this method (for parallel name update logic)
         session_existed = self.session is not None
         
@@ -291,23 +291,16 @@ class SessionManager():
                         session=self.session,
                         summary=summary
                     )
-                # Run message insertion and name update in parallel for existing sessions
-                # Scenario: New session with chat_name - It will again try to set it up so only set name when it was originally an existing session
+                # Ensure writes happen sequentially to avoid Mongo write conflicts
+                await self.session.insert_messages(
+                    messages=messages,
+                    turn_number=turn_number,
+                    previous_summary=summary,
+                )
+
                 if session_existed and chat_name:
-                    await asyncio.gather(
-                        self.session.insert_messages(
-                            messages=messages,
-                            turn_number=turn_number,
-                            previous_summary=summary,
-                        ),
-                        self.session.update_name(chat_name)
-                    )
-                else:
-                    await self.session.insert_messages(
-                        messages=messages,
-                        turn_number=turn_number,
-                        previous_summary=summary,
-                    )
+                    await self.session.update_name(chat_name)
+                
             except Exception as e:
                 logger.error(f"Failed to insert messages for session {self.session_id}: {str(e)}")
                 # If insertion fails, still save user message and error response
@@ -315,14 +308,15 @@ class SessionManager():
                     return
                 
                 # Create fallback messages with error response
-                fallback_messages = self.create_fallback_messages(messages[0])
+                messages = self.create_fallback_messages(messages[0])
                 
                 await self.session.insert_messages(
-                    messages=fallback_messages,
+                    messages=messages,
                     turn_number=turn_number,
                     previous_summary=summary,
                 )
 
+        return messages
     
         
         

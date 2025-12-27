@@ -1,4 +1,5 @@
 from __future__ import annotations
+from email import message
 
 from opentelemetry.trace import SpanKind
 
@@ -210,7 +211,7 @@ class Runner:
     )
     async def run(self, query: str, skip_cache = config.SKIP_CACHE) -> dict:
         result: QueryResult = await self._handle_query(query, skip_cache)
-        await self.session_manager.update_user_session(
+        messages = await self.session_manager.update_user_session(
             messages=result.messages,
             summary=result.summary,
             chat_name=result.chat_name,
@@ -220,30 +221,26 @@ class Runner:
         return {
             "messages": [
                 msg.model_dump(mode='json', exclude={"session", "previous_summary"})
-                for msg in result.messages
+                for msg in messages
             ],
             "summary": (
                 result.summary.model_dump(mode='json', exclude={"session"})
                 if result.summary
                 else None
             ),
-            "chat_name": result.chat_name
+            "chat_name": result.chat_name,
+            "session_id": str(self.session_manager.session.id)
         }
 
 
 # Test scenarios
-# 4. Validate the previous summaries end turn number + 1 = current summary start turn number
-
-
+# 1. generate chatname should recieve full conversation as summary is generated later in conversation so it does not have full context
 
 # 2. Token related summary generation
 # 3. Token related chat name generation
-# 4. Turn related summary generation
-# 5. Turn related chat name generation
-# 6. Test other routes like users, sessions, turns, summaries
-# 6. Test toolcalls
+# 4. Test other routes like users, sessions, turns, summaries
+# 5. Test toolcalls
 
 
 
 # implement redis caching
-# After adding redis rethink if you still need singleton anywhere

@@ -45,7 +45,7 @@ class LLMProvider(ABC):
     async def generate_response(
         cls, 
         conversation_history: List[MessageDTO], 
-        tools: List[Tool] = [], 
+        tools: List[Tool] = [],
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL
     ) -> tuple[List[MessageDTO], bool]:
@@ -146,7 +146,7 @@ class LLMProvider(ABC):
             mock_summary = None
         # Generate mock chat name for new chats
         mock_chat_name = None
-        if new_chat and config.MOCK_AI_CHAT_NAME:
+        if new_chat or config.MOCK_AI_CHAT_NAME:
             # Use first few words of query for chat name
             query_words = query.split()[:3]
             mock_chat_name = f"Mock Chat: {' '.join(query_words)}"

@@ -29,6 +29,7 @@ from ai_server.utils.tracing import trace_method, trace_operation, CustomSpanKin
 
 class Session(Document):
     name: str = Field(default_factory=lambda: DEFAULT_SESSION_NAME)
+    latest_turn_number: int = Field(...)
     user: Link[User]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -90,7 +91,8 @@ class Session(Document):
                     # Create and save session
                     new_session = cls(
                         name=session_name,
-                        user=new_user
+                        user=new_user,
+                        latest_turn_number=0
                     )
                     await new_session.insert(session=session_txn)
                     
@@ -131,7 +133,8 @@ class Session(Document):
         try:
             new_session = cls(
                 name=session_name,
-                user=user
+                user=user,
+                latest_turn_number=0
             )
             await new_session.insert()
             return new_session
@@ -140,6 +143,36 @@ class Session(Document):
             raise SessionCreationFailedException(
                 message="Failed to create session for existing user",
                 note=f"user_id={user.id}, session_name={session_name}, error={str(e)}"
+            )
+
+    async def _update_latest_turn_number(self, turn_number: int, session=None) -> None:
+        """
+        Update the latest turn number for a session.
+        
+        Args:
+            session_id: MongoDB document ID of the session
+            turn_number: New latest turn number
+            
+        Raises:
+            SessionUpdateFailedException: If update fails
+        """
+        try:
+            if not self.id:
+                raise SessionUpdateFailedException(
+                    message="Cannot update latest turn number for non-existent session",
+                    note=f"session_id={self.id}, turn_number={turn_number}"
+                )
+            
+            self.latest_turn_number = turn_number
+            if session:
+                await self.save(session=session)
+            else:
+                await self.save()
+            
+        except Exception as e:
+            raise SessionUpdateFailedException(
+                message="Failed to update latest turn number for session",
+                note=f"session_id={self.id}, turn_number={turn_number}, error={str(e)}"
             )
     
     async def update_name(self, new_name: str) -> None:
@@ -290,8 +323,13 @@ class Session(Document):
                 )
                 message_docs.append(message_doc)
 
-            # Bulk insert all messages (atomic operation)
-            await Message.insert_many(message_docs)
+            from ai_server.db import MongoDB
+
+            client = MongoDB.get_client()
+            async with client.start_session() as session_txn:
+                async with await session_txn.start_transaction():
+                    await Message.insert_many(message_docs, session=session_txn)
+                    await self._update_latest_turn_number(turn_number, session=session_txn)
             
             return message_docs
             
