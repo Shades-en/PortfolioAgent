@@ -28,6 +28,7 @@ class MessageDTO(BaseModel):
     function_call: FunctionCallRequest | None = None
     token_count: int = 0
     error: bool = False
+    order: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     @model_validator(mode="after")

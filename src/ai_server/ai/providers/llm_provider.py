@@ -108,7 +108,8 @@ class LLMProvider(ABC):
         mock_message = MessageDTO(
             role=Role.AI,
             content="This is a mock AI response. The actual LLM call has been bypassed for testing purposes.",
-            metadata={"mock": True}
+            metadata={"mock": True},
+            order=4
         )
         
         return [mock_message], False
@@ -117,6 +118,8 @@ class LLMProvider(ABC):
     async def mock_generate_summary_or_chat_name(
         cls,
         query: str,
+        previous_summary: str | None = None,
+        conversation_to_summarize: List[MessageDTO] | None = None,
         new_chat: bool = False,
         turns_after_last_summary: int = 0,
         turn_number: int = 1,
@@ -126,6 +129,8 @@ class LLMProvider(ABC):
         Returns dummy summary and chat name without making actual LLM calls.
         
         Args:
+            previous_summary: Summary text available before this turn
+            conversation_to_summarize: Recent conversation messages when no summary exists
             new_chat: Whether this is a new chat (used to determine chat name generation)
             query: Current user query (used in mock chat name)
             
@@ -148,7 +153,12 @@ class LLMProvider(ABC):
         mock_chat_name = None
         if new_chat or config.MOCK_AI_CHAT_NAME:
             # Use first few words of query for chat name
+            context_hint = ""
+            if previous_summary:
+                context_hint = " (summary context)"
+            elif conversation_to_summarize:
+                context_hint = " (recent convo)"
             query_words = query.split()[:3]
-            mock_chat_name = f"Mock Chat: {' '.join(query_words)}"
+            mock_chat_name = f"Mock Chat{context_hint}: {' '.join(query_words)}"
         
         return mock_summary, mock_chat_name

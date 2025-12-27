@@ -244,8 +244,8 @@ class Session(Document):
                     # Delete session, messages, and summaries in parallel
                     delete_results = await asyncio.gather(
                         session.delete(session=session_txn),
-                        Message.find(Message.session.id == obj_id).delete(session=session_txn),
-                        Summary.find(Summary.session.id == obj_id).delete(session=session_txn)
+                        Message.find(Message.session._id == obj_id).delete(session=session_txn),
+                        Summary.find(Summary.session._id == obj_id).delete(session=session_txn)
                     )
                     
                     messages_deleted = delete_results[1].deleted_count if delete_results[1] else 0
@@ -319,6 +319,7 @@ class Session(Document):
                     error=msg_dto.error,
                     turn_number=turn_number,
                     previous_summary=previous_summary,
+                    order=msg_dto.order,
                     session=self
                 )
                 message_docs.append(message_doc)

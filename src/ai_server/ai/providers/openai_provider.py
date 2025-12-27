@@ -18,7 +18,8 @@ from ai_server.config import (
     MAX_TURNS_TO_FETCH, 
     TURNS_BETWEEN_CHAT_NAME, 
     MAX_CHAT_NAME_WORDS, 
-    MAX_CHAT_NAME_LENGTH
+    MAX_CHAT_NAME_LENGTH,
+    CHAT_NAME_CONTEXT_MAX_MESSAGES,
 )
 from ai_server.constants import OPENAI
 
@@ -248,14 +249,49 @@ class OpenAIProvider(LLMProvider, ABC):
                 chat_name = await cls._generate_chat_name(query)
             elif turn_number % TURNS_BETWEEN_CHAT_NAME == 0:
                 # Existing chat: generate name periodically with context
-                chat_name = await cls._generate_chat_name(query, previous_summary)
+                chat_name = await cls._generate_chat_name(
+                    query,
+                    previous_summary,
+                    conversation_to_summarize,
+                )
         return summary, chat_name
     
+    @classmethod
+    def _build_chat_name_context(
+        cls,
+        conversation_to_summarize: List[MessageDTO],
+        max_messages: int = CHAT_NAME_CONTEXT_MAX_MESSAGES,
+    ) -> str:
+        """Format recent conversation snippets for chat name context."""
+        if not conversation_to_summarize:
+            return ""
+
+        relevant_messages = conversation_to_summarize[-max_messages:]
+        parts: List[str] = []
+        part_tokens: List[int] = []
+        total_tokens = 0
+        for message in relevant_messages:
+            if not message.content:
+                continue
+            role_label = message.role.value.capitalize()
+            snippet = f"{role_label}: {message.content.strip()}"
+            tokens = get_token_count(snippet)
+            parts.append(snippet)
+            part_tokens.append(tokens)
+            total_tokens += tokens
+        while parts and total_tokens > MAX_TOKEN_THRESHOLD:
+            total_tokens -= part_tokens.pop(0)
+            parts.pop(0)
+
+        context = "\n".join(parts).strip()
+        return context
+
     @classmethod
     async def _generate_chat_name(
         cls,
         query: str,
-        previous_summary: str | None = None
+        previous_summary: str | None = None,
+        conversation_to_summarize: List[MessageDTO] | None = None,
     ) -> str:
         """
         Generate a meaningful, concise chat name based on the query and optional previous summary.
@@ -263,11 +299,26 @@ class OpenAIProvider(LLMProvider, ABC):
         Args:
             query: The user's query
             previous_summary: Optional previous conversation summary for context
+            conversation_to_summarize: Optional recent conversation messages when summary unavailable
             
         Returns:
             A concise chat name (respects MAX_CHAT_NAME_LENGTH and MAX_CHAT_NAME_WORDS config)
         """
-        context = f"Previous context: {previous_summary}\n\n" if previous_summary else ""
+        context_sections: List[str] = []
+        if previous_summary:
+            context_sections.append(f"Previous summary:\n{previous_summary.content}")
+
+        if conversation_to_summarize:
+            conversation_context = cls._build_chat_name_context(conversation_to_summarize)
+            if conversation_context:
+                context_sections.append(
+                    "Recent conversation snippets:\n" + conversation_context
+                )
+
+        context = "\n\n".join(context_sections)
+        if context:
+            context = f"{context}\n\n"
+
         user_prompt = CHAT_NAME_USER_PROMPT.format(
             context=context, 
             query=query,
@@ -334,6 +385,7 @@ class OpenAIProvider(LLMProvider, ABC):
             metadata=metadata or {},
             content=content,
             function_call=None,
+            order=0
         )
 
 class OpenAIResponsesAPI(OpenAIProvider):
@@ -422,6 +474,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         metadata={},
                         content='',
                         function_call=function_call,
+                        order=2
                     )
                     
                     # Create task for parallel execution
@@ -436,6 +489,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         metadata={},
                         content=resp.content[0].text,
                         function_call=None,
+                        order=4
                     )
                     messages.append(message)
                 else:
@@ -453,6 +507,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         metadata={},
                         content=function_responses[i],
                         function_call=None,
+                        order=3
                     )
                     messages.append(message_ai)
                     messages.append(message_tool)
@@ -547,6 +602,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                     metadata={},
                     content=content,
                     function_call=None,
+                    order=4
                 )
                 return [message]
             if tool_calls:
@@ -565,6 +621,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         metadata={},
                         content='',
                         function_call=function_call,
+                        order=2
                     )
                     
                     # Create task for parallel execution
@@ -583,6 +640,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         metadata={},
                         content=function_responses[i],
                         function_call=None,
+                        order=3
                     )
                     messages.append(message_ai)
                     messages.append(message_tool)

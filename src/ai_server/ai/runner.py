@@ -130,6 +130,7 @@ class Runner:
             metadata={},
             content=query,
             function_call=None,
+            order=1
         )
 
         try:
@@ -144,13 +145,15 @@ class Runner:
                     conversation_history.append(user_query_message)
 
                 # Generate LLM response and metadata in parallel
-                (messages, tool_call), (new_summary, chat_name) = await self._generate_response_and_metadata(
+                (ai_messages, tool_call), (new_summary, chat_name) = await self._generate_response_and_metadata(
                     conversation_history=conversation_history,
                     previous_conversation=previous_conversation,
                     summary=summary,
                     query=query,
                     tool_call=tool_call
                 )
+                messages.extend(ai_messages)
+
                 # If tool call is not made then turn is completed. If tool call is made 
                 # then turn will be completed once AI executes the tool call, in the next iteration.
                 if tool_call:
@@ -231,16 +234,6 @@ class Runner:
             "chat_name": result.chat_name,
             "session_id": str(self.session_manager.session.id)
         }
-
-
-# Test scenarios
-# 1. generate chatname should recieve full conversation as summary is generated later in conversation so it does not have full context
-
-# 2. Token related summary generation
-# 3. Token related chat name generation
-# 4. Test other routes like users, sessions, turns, summaries
-# 5. Test toolcalls
-
 
 
 # implement redis caching

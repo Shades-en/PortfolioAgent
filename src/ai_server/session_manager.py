@@ -241,6 +241,7 @@ class SessionManager():
             content="I apologize, but something went wrong while processing your request. Please try again.",
             function_call=None,
             token_count=0,
+            order=4,
             error=True
         )
         

@@ -35,19 +35,24 @@ class Message(Document):
     turn_number: int = 1
     error: bool = False
     session: Link[Session]
+    order: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Settings:
         name = "messages"
         indexes = [
             # For chronological queries and pagination
-            [("session._id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)],
+            [
+                ("session._id", pymongo.ASCENDING), 
+                ("created_at", pymongo.DESCENDING), 
+                ("order", pymongo.ASCENDING)
+            ],
             # For turn-based range queries (get_latest_by_session) with role tie-breaker
             [
                 ("session._id", pymongo.ASCENDING),
                 ("turn_number", pymongo.ASCENDING),
                 ("created_at", pymongo.ASCENDING),
-                ("role", pymongo.DESCENDING)
+                ("order", pymongo.ASCENDING)
             ]
         ]
     
@@ -88,7 +93,8 @@ class Message(Document):
             messages = await cls.find(
                 cls.session._id == ObjectId(session_id)
             ).sort(
-                -cls.created_at  # Descending to get most recent
+                -cls.created_at,  # Descending to get most recent
+                -cls.order  # Ensure ai messages precede human when timestamps match
             ).skip(skip).limit(page_size).to_list()
             
             # Then reverse to get chronological order (oldest to newest)
@@ -120,7 +126,8 @@ class Message(Document):
             messages = await cls.find(
                 cls.session._id == ObjectId(session_id)
             ).sort(
-                +cls.created_at  # Ascending order (oldest first)
+                +cls.created_at,  # Ascending order (oldest first)
+                +cls.order  # Ensure human messages precede ai when timestamps match
             ).to_list()
             
             return messages
@@ -172,7 +179,7 @@ class Message(Document):
                 cls.turn_number >= min_turn_number
             ).sort(
                 +cls.created_at,  # Ascending order (oldest first)
-                -cls.role  # Ensure human messages precede ai when timestamps match
+                +cls.order  # Ensure human messages precede ai when timestamps match
             ).to_list()
             
             # Validate: ensure current_turn_number is greater than latest fetched turn
