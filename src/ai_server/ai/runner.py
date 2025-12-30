@@ -1,11 +1,11 @@
 from __future__ import annotations
-from email import message
 
 from opentelemetry.trace import SpanKind
 
 from ai_server import config
 from ai_server.ai.agents.agent import Agent
 from ai_server.ai.providers import get_llm_provider
+from ai_server.ai.providers.llm_provider import StreamCallback
 from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
@@ -57,7 +57,8 @@ class Runner:
         previous_conversation: List[MessageDTO],
         summary: Summary | None,
         query: str,
-        tool_call: bool
+        tool_call: bool,
+        on_stream_event: StreamCallback | None = None,
     ) -> tuple[tuple[List[MessageDTO], bool], tuple[Summary | None, str | None]]:
         """
         Generate LLM response and metadata (summary/chat_name) in parallel.
@@ -91,10 +92,13 @@ class Runner:
             )
         
         # Use real LLM methods
+        stream_enabled = config.ENABLE_STREAMING and on_stream_event is not None
         return await asyncio.gather(
             self.llm_provider.generate_response(
                 conversation_history=conversation_history,
                 tools=self.agent.tools,
+                stream=stream_enabled,
+                on_stream_event=on_stream_event if stream_enabled else None,
             ),
             self.llm_provider.generate_summary_or_chat_name(
                 conversation_to_summarize=previous_conversation,
@@ -113,7 +117,12 @@ class Runner:
         capture_output=False,
         graph_node_id="query_handler"
     )
-    async def _handle_query(self, query: str, skip_cache: bool = config.SKIP_CACHE) -> QueryResult:
+    async def _handle_query(
+        self,
+        query: str,
+        skip_cache: bool = config.SKIP_CACHE,
+        on_stream_event: StreamCallback | None = None,
+    ) -> QueryResult:
         turn_completed = False
         tool_call = False
 
@@ -150,7 +159,8 @@ class Runner:
                     previous_conversation=previous_conversation,
                     summary=summary,
                     query=query,
-                    tool_call=tool_call
+                    tool_call=tool_call,
+                    on_stream_event=on_stream_event,
                 )
                 messages.extend(ai_messages)
 
@@ -212,8 +222,13 @@ class Runner:
         kind=OpenInferenceSpanKindValues.AGENT,
         graph_node_id=lambda self: self.agent.name.lower()
     )
-    async def run(self, query: str, skip_cache = config.SKIP_CACHE) -> dict:
-        result: QueryResult = await self._handle_query(query, skip_cache)
+    async def run(
+        self,
+        query: str,
+        skip_cache = config.SKIP_CACHE,
+        on_stream_event: StreamCallback | None = None,
+    ) -> dict:
+        result: QueryResult = await self._handle_query(query, skip_cache, on_stream_event)
         messages = await self.session_manager.update_user_session(
             messages=result.messages,
             summary=result.summary,

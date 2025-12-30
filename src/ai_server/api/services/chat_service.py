@@ -22,6 +22,7 @@ class ChatService:
         turn_number: int,
         new_chat: bool,
         new_user: bool,
+        on_stream_event=None,
     ) -> dict:
         """
         Handle a chat request by orchestrating session management, agent creation, and query execution.
@@ -50,4 +51,4 @@ class ChatService:
 
         # Execute query through runner
         runner = Runner(agent=agent, session_manager=session_manager)
-        return await runner.run(query)
+        return await runner.run(query, on_stream_event=on_stream_event)

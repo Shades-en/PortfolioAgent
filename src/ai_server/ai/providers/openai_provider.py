@@ -1,7 +1,11 @@
 from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
-from ai_server.ai.providers.llm_provider import LLMProvider
+from ai_server.ai.providers.llm_provider import (
+    LLMProvider,
+    StreamCallback,
+    dispatch_stream_event,
+)
 from ai_server.ai.providers.embedding_provider import EmbeddingProvider
 from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
@@ -21,7 +25,23 @@ from ai_server.config import (
     MAX_CHAT_NAME_LENGTH,
     CHAT_NAME_CONTEXT_MAX_MESSAGES,
 )
-from ai_server.constants import OPENAI
+from ai_server.constants import (
+    OPENAI,
+    STREAM_EVENT_START,
+    STREAM_EVENT_TEXT_START,
+    STREAM_EVENT_TEXT_DELTA,
+    STREAM_EVENT_TEXT_END,
+    STREAM_EVENT_REASONING_START,
+    STREAM_EVENT_REASONING_DELTA,
+    STREAM_EVENT_REASONING_END,
+    STREAM_EVENT_TOOL_INPUT_START,
+    STREAM_EVENT_TOOL_INPUT_DELTA,
+    STREAM_EVENT_TOOL_INPUT_AVAILABLE,
+    STREAM_EVENT_TOOL_OUTPUT_AVAILABLE,
+    STREAM_EVENT_FINISH_STEP,
+    STREAM_EVENT_FINISH,
+    STREAM_EVENT_ERROR,
+)
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 import logging
@@ -45,6 +65,15 @@ class OpenAIProvider(LLMProvider, ABC):
     provider: str = OPENAI
     temperature: float = 0.7
     async_client: openai.AsyncOpenAI = None
+
+    @staticmethod
+    def _safe_json_loads(value: str | None) -> dict | str | None:
+        if value is None:
+            return None
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
 
     @classmethod
     def _get_client(cls) -> openai.AsyncOpenAI:
@@ -125,7 +154,9 @@ class OpenAIProvider(LLMProvider, ABC):
         conversation_history: List[MessageDTO], 
         tools: List[Tool] = [],
         tool_choice: str = "auto",
-        model_name: str = BASE_MODEL
+        model_name: str = BASE_MODEL,
+        stream: bool = False,
+        on_stream_event: StreamCallback | None = None,
     ) -> tuple[List[MessageDTO], bool]:
         """
         Generate a response from the LLM.
@@ -140,8 +171,14 @@ class OpenAIProvider(LLMProvider, ABC):
             model=model_name,
             tools=cls._convert_tools_to_openai_compatible(tools),
             tool_choice=tool_choice,
+            stream=stream,
+            on_stream_event=on_stream_event,
         )
-        ai_messages = await cls._handle_ai_messages_and_tool_calls(response, tools)
+        ai_messages = await cls._handle_ai_messages_and_tool_calls(
+            response,
+            tools,
+            on_stream_event=on_stream_event,
+        )
         if ai_messages[-1].role == Role.TOOL:
             tool_call = True
         return ai_messages, tool_call
@@ -399,6 +436,8 @@ class OpenAIResponsesAPI(OpenAIProvider):
         tools: List[Dict] | None = None,
         tool_choice: str | None = None,
         instructions: str | None = None,
+        stream: bool = False,
+        on_stream_event: StreamCallback | None = None,
     ) -> Response:
         """Generic wrapper for OpenAI Responses API calls."""
         kwargs = {
@@ -412,7 +451,97 @@ class OpenAIResponsesAPI(OpenAIProvider):
             kwargs["tool_choice"] = tool_choice
         if instructions:
             kwargs["instructions"] = instructions
-        return await cls._get_client().responses.create(**kwargs)
+        client = cls._get_client()
+        if not stream:
+            return await client.responses.create(**kwargs)
+
+        text_started: set[str] = set()
+        reasoning_started: set[str] = set()
+        tool_inputs_started: set[str] = set()
+        finish_emitted = False
+
+        async with client.responses.stream(**kwargs) as response_stream:
+            async for event in response_stream:
+                event_type = getattr(event, "type", "")
+                payload = event.model_dump(mode="python")
+
+                if event_type == "response.created":
+                    await dispatch_stream_event(
+                        on_stream_event,
+                        {"type": STREAM_EVENT_START, "messageId": payload.get("response", {}).get("id")},
+                    )
+                elif event_type == "response.output_text.delta":
+                    text_id = payload.get("item_id")
+                    if text_id and text_id not in text_started:
+                        text_started.add(text_id)
+                        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_TEXT_START, "id": text_id})
+                    if text_id:
+                        await dispatch_stream_event(
+                            on_stream_event,
+                            {"type": STREAM_EVENT_TEXT_DELTA, "id": text_id, "delta": payload.get("delta", "")},
+                        )
+                elif event_type == "response.output_text.done":
+                    text_id = payload.get("item_id")
+                    if text_id:
+                        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_TEXT_END, "id": text_id})
+                elif event_type == "response.reasoning_text.delta":
+                    reasoning_id = payload.get("item_id")
+                    if reasoning_id and reasoning_id not in reasoning_started:
+                        reasoning_started.add(reasoning_id)
+                        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_REASONING_START, "id": reasoning_id})
+                    if reasoning_id:
+                        await dispatch_stream_event(
+                            on_stream_event,
+                            {"type": STREAM_EVENT_REASONING_DELTA, "id": reasoning_id, "delta": payload.get("delta", "")},
+                        )
+                elif event_type == "response.reasoning_text.done":
+                    reasoning_id = payload.get("item_id")
+                    if reasoning_id:
+                        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_REASONING_END, "id": reasoning_id})
+                elif event_type == "response.function_call_arguments.delta":
+                    call_id = payload.get("item_id")
+                    if call_id and call_id not in tool_inputs_started:
+                        tool_inputs_started.add(call_id)
+                        await dispatch_stream_event(
+                            on_stream_event,
+                            {"type": STREAM_EVENT_TOOL_INPUT_START, "toolCallId": call_id},
+                        )
+                    if call_id:
+                        await dispatch_stream_event(
+                            on_stream_event,
+                            {
+                                "type": STREAM_EVENT_TOOL_INPUT_DELTA,
+                                "toolCallId": call_id,
+                                "inputTextDelta": payload.get("delta", ""),
+                            },
+                        )
+                elif event_type == "response.function_call_arguments.done":
+                    call_id = payload.get("item_id")
+                    parsed_args = cls._safe_json_loads(payload.get("arguments"))
+                    if call_id:
+                        await dispatch_stream_event(
+                            on_stream_event,
+                            {
+                                "type": STREAM_EVENT_TOOL_INPUT_AVAILABLE,
+                                "toolCallId": call_id,
+                                "input": parsed_args,
+                            },
+                        )
+                elif event_type == "response.completed":
+                    finish_emitted = True
+                    await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_FINISH})
+                elif event_type == "response.failed":
+                    error_obj = payload.get("error", {})
+                    error_text = error_obj.get("message") if isinstance(error_obj, dict) else str(error_obj)
+                    await dispatch_stream_event(
+                        on_stream_event,
+                        {"type": STREAM_EVENT_ERROR, "errorText": error_text or "response.failed"},
+                    )
+
+            final_response = await response_stream.get_final_response()
+            if not finish_emitted:
+                await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_FINISH})
+            return final_response
 
     @classmethod
     def _convert_to_openai_compatible_messages(cls, message: MessageDTO) -> Dict:
@@ -453,6 +582,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
         cls, 
         response: Response, 
         tools: List[Tool],
+        on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
         outputs = response.output
         messages: List[MessageDTO] = []
@@ -501,16 +631,30 @@ class OpenAIResponsesAPI(OpenAIProvider):
                 
                 # Create tool messages with the responses
                 for i, (message_ai, call_id) in enumerate(function_call_messages):
+                    tool_output = function_responses[i]
+                    if hasattr(tool_output, "model_dump"):
+                        tool_output_payload = tool_output.model_dump()
+                    else:
+                        tool_output_payload = tool_output
+                    await dispatch_stream_event(
+                        on_stream_event,
+                        {
+                            "type": "tool-output-available",
+                            "toolCallId": call_id,
+                            "output": tool_output_payload,
+                        },
+                    )
                     message_tool = MessageDTO(
                         role=Role.TOOL,
                         tool_call_id=call_id,
                         metadata={},
-                        content=function_responses[i],
+                        content=str(tool_output),
                         function_call=None,
                         order=3
                     )
                     messages.append(message_ai)
                     messages.append(message_tool)
+                await dispatch_stream_event(on_stream_event, {"type": "finish-step"})
             return messages
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))

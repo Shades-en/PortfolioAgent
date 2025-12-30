@@ -1,11 +1,24 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from typing import List, Dict, Callable, Awaitable, Any
+import inspect
 
 from ai_server import config
 from ai_server.schemas.summary import Summary
 from ai_server.types.message import MessageDTO, FunctionCallRequest, Role
 from ai_server.ai.tools.tools import Tool
 from ai_server.config import BASE_MODEL
+
+
+StreamEvent = dict[str, Any]
+StreamCallback = Callable[[StreamEvent], Awaitable[None] | None]
+
+
+async def dispatch_stream_event(callback: StreamCallback | None, event: StreamEvent) -> None:
+    if not callback:
+        return
+    result = callback(event)
+    if inspect.isawaitable(result):
+        await result
 
 
 class LLMProvider(ABC):
@@ -22,6 +35,8 @@ class LLMProvider(ABC):
         tools: List[Dict] | None = None,
         tool_choice: str | None = None,
         instructions: str | None = None,
+        stream: bool = False,
+        on_stream_event: StreamCallback | None = None,
     ) -> any:
         """Generic wrapper for LLM API calls. Implemented by subclasses."""
         pass
@@ -32,6 +47,7 @@ class LLMProvider(ABC):
         cls, 
         response: any, 
         tools: List[Tool],
+        on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
         """
         Handle AI response and tool calls. Implemented by subclasses.
@@ -47,7 +63,9 @@ class LLMProvider(ABC):
         conversation_history: List[MessageDTO], 
         tools: List[Tool] = [],
         tool_choice: str = "auto",
-        model_name: str = BASE_MODEL
+        model_name: str = BASE_MODEL,
+        stream: bool = False,
+        on_stream_event: StreamCallback | None = None,
     ) -> tuple[List[MessageDTO], bool]:
         """
         Generate a response from the LLM.

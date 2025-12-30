@@ -30,6 +30,7 @@ ENABLE_OUTPUT_GUARDRAIL = _env_flag("ENABLE_OUTPUT_GUARDRAIL", True)
 
 # Cache
 SKIP_CACHE = _env_flag("SKIP_CACHE", False)
+ENABLE_STREAMING = _env_flag("ENABLE_STREAMING", False)
 
 # LLM Providers
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", OPENAI)
