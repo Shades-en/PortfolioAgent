@@ -11,6 +11,7 @@ from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
 )
+from ai_server.utils.general import generate_id
 from ai_server.utils.tracing import trace_method, track_state_change, CustomSpanKinds
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,8 @@ class SessionManager():
                 tool_call_id=msg.tool_call_id,
                 metadata=msg.metadata,
                 content=msg.content,
-                function_call=msg.function_call
+                function_call=msg.function_call,
+                response_id=msg.response_id,
             )
             for msg in messages
         ]
@@ -242,7 +244,8 @@ class SessionManager():
             function_call=None,
             token_count=0,
             order=4,
-            error=True
+            error=True,
+            response_id=f"error_response_{generate_id(8)}"
         )
         
         # Return list with user message and error response

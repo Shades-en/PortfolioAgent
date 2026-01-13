@@ -27,7 +27,7 @@ class UserType(Enum):
 
 
 class User(Document):
-    cookie_id: str
+    cookie_id: str = Field(..., min_length=1)
     category: UserType = UserType.GUEST
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

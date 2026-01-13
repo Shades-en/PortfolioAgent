@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 class Message(Document):
     role: Role
     # tool_call_id is given "null" when not exists because redis tag field does not accept None
+    response_id: str | None
     tool_call_id: str 
     metadata: dict
     content: str | None

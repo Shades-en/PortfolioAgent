@@ -320,6 +320,7 @@ class Session(Document):
                     turn_number=turn_number,
                     previous_summary=previous_summary,
                     order=msg_dto.order,
+                    response_id=msg_dto.response_id,
                     session=self
                 )
                 message_docs.append(message_doc)

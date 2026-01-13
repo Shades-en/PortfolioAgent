@@ -22,6 +22,7 @@ class MessageDTO(BaseModel):
     Does not include DB-specific fields like session Link.
     """
     role: Role
+    response_id: str | None = None
     tool_call_id: str = "null"
     metadata: dict = Field(default_factory=dict)
     content: str | None = None

@@ -5,7 +5,7 @@ from opentelemetry.trace import SpanKind
 from ai_server import config
 from ai_server.ai.agents.agent import Agent
 from ai_server.ai.providers import get_llm_provider
-from ai_server.ai.providers.llm_provider import StreamCallback
+from ai_server.ai.providers.llm_provider import StreamCallback, dispatch_stream_event
 from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
@@ -16,6 +16,12 @@ from ai_server.schemas import Summary
 from ai_server.session_manager import SessionManager
 from ai_server.api.exceptions.agent_exceptions import MaxStepsReachedException
 from ai_server.utils.tracing import trace_method
+from ai_server.utils.general import generate_id
+from ai_server.constants import (
+    STREAM_EVENT_START,
+    STREAM_EVENT_ERROR,
+    STREAM_EVENT_FINISH,
+)
 
 import asyncio
 from typing import List
@@ -42,7 +48,6 @@ class Runner:
         self.skip_cache = config.SKIP_CACHE
         self.llm_provider = get_llm_provider(
             provider_name=config.LLM_PROVIDER, 
-            chat_completion=config.CHAT_COMPLETION
         )
 
     @trace_method(
@@ -92,7 +97,7 @@ class Runner:
             )
         
         # Use real LLM methods
-        stream_enabled = config.ENABLE_STREAMING and on_stream_event is not None
+        stream_enabled = on_stream_event is not None
         return await asyncio.gather(
             self.llm_provider.generate_response(
                 conversation_history=conversation_history,
@@ -111,6 +116,24 @@ class Runner:
                 turn_number=self.session_manager.state.turn_number
             ),
         )
+
+    @staticmethod
+    async def _stream_fallback_response(
+        on_stream_event: StreamCallback,
+        response_message: MessageDTO,
+    ) -> None:
+        """
+        Emit streaming events for a fallback response so the client receives error text in real time.
+        """
+        message_id = response_message.response_id or f"fallback_{generate_id(12)}"
+        content = response_message.content or "Something went wrong while processing your request."
+
+        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_START, "messageId": message_id})
+        await dispatch_stream_event(
+            on_stream_event,
+            {"type": STREAM_EVENT_ERROR, "errorText": content},
+        )
+        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_FINISH})
 
     @trace_method(
         kind=OpenInferenceSpanKindValues.CHAIN,
@@ -139,7 +162,7 @@ class Runner:
             metadata={},
             content=query,
             function_call=None,
-            order=1
+            order=1,
         )
 
         try:
@@ -201,6 +224,8 @@ class Runner:
         except Exception as e:
             logger.error(f"Error in _handle_query: {e}")
             fallback_messages = self.session_manager.create_fallback_messages(user_query_message)
+            if on_stream_event and fallback_messages:
+                await self._stream_fallback_response(on_stream_event, fallback_messages[-1])
             
             # Try to get summary: use existing, fetch from DB, or None
             previous_summary = summary
@@ -249,6 +274,3 @@ class Runner:
             "chat_name": result.chat_name,
             "session_id": str(self.session_manager.session.id)
         }
-
-
-# implement redis caching
