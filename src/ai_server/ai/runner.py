@@ -278,4 +278,3 @@ class Runner:
 # Test summary and chatname for chatcompeltion and responses with tool calls
 # implement search chat feature
 # implement starred messages endpoint and modify db schema
-# Implement Liked, disliked and untouched  - One enum should be enough called feeback

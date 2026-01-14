@@ -32,11 +32,13 @@ class Session(Document):
     latest_turn_number: int = Field(...)
     user: Link[User]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    starred: bool = Field(default=False)
 
     class Settings:
         name = "sessions"
         indexes = [
-            [("user.$id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)]
+            [("user.$id", pymongo.ASCENDING), ("updated_at", pymongo.DESCENDING)]
         ]
     
     @classmethod
@@ -147,11 +149,12 @@ class Session(Document):
 
     async def _update_latest_turn_number(self, turn_number: int, session=None) -> None:
         """
-        Update the latest turn number for a session.
+        Update the latest turn number and updated_at timestamp for a session.
         
         Args:
             session_id: MongoDB document ID of the session
             turn_number: New latest turn number
+            session: Optional MongoDB session for transaction support
             
         Raises:
             SessionUpdateFailedException: If update fails
@@ -164,6 +167,7 @@ class Session(Document):
                 )
             
             self.latest_turn_number = turn_number
+            self.updated_at = datetime.now(timezone.utc)
             if session:
                 await self.save(session=session)
             else:
@@ -199,6 +203,54 @@ class Session(Document):
             raise SessionUpdateFailedException(
                 message="Failed to update session name",
                 note=f"session_id={self.id}, new_name={new_name}, error={str(e)}"
+            )
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
+    async def update_starred(cls, session_id: str, starred: bool) -> dict:
+        """
+        Update the starred status for a session.
+        
+        Args:
+            session_id: The session ID to update
+            starred: Whether the session should be starred (True) or unstarred (False)
+            
+        Returns:
+            Dictionary with update info: {
+                "session_updated": bool,
+                "session_id": str,
+                "starred": bool
+            }
+            
+        Raises:
+            SessionUpdateFailedException: If update fails
+        
+        Traced as INTERNAL span for database operation.
+        """
+        try:
+            obj_id = ObjectId(session_id)
+            session = await cls.get(obj_id)
+            if not session:
+                raise SessionUpdateFailedException(
+                    message="Session not found",
+                    note=f"session_id={session_id}"
+                )
+            
+            session.starred = starred
+            await session.save()
+            
+            return {
+                "session_updated": True,
+                "session_id": session_id,
+                "starred": starred
+            }
+                    
+        except SessionUpdateFailedException:
+            raise
+        except Exception as e:
+            raise SessionUpdateFailedException(
+                message="Failed to update session starred status",
+                note=f"session_id={session_id}, starred={starred}, error={str(e)}"
             )
     
     @classmethod
@@ -385,7 +437,7 @@ class Session(Document):
                     }
                 },
                 {
-                    "$sort": {"created_at": -1}  # Most recent first
+                    "$sort": {"updated_at": -1}  # Most recently updated first
                 },
                 {
                     "$skip": skip
@@ -441,7 +493,7 @@ class Session(Document):
                     }
                 },
                 {
-                    "$sort": {"created_at": -1}  # Most recent first
+                    "$sort": {"updated_at": -1}  # Most recently updated first
                 }
             ]
             
@@ -453,6 +505,107 @@ class Session(Document):
         except Exception as e:
             raise SessionRetrievalFailedException(
                 message="Failed to retrieve all sessions for user by cookie",
+                note=f"cookie_id={cookie_id}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def count_by_user_cookie(cls, cookie_id: str) -> int:
+        """
+        Get the total count of sessions for a user by cookie ID.
+        Uses MongoDB aggregation with $lookup to join with users collection.
+        
+        Args:
+            cookie_id: The user's cookie ID
+            
+        Returns:
+            Total count of sessions for the user
+            
+        Raises:
+            SessionRetrievalFailedException: If retrieval fails
+        """
+        try:
+            # Aggregation pipeline to lookup user by cookie_id and count sessions
+            pipeline = [
+                {
+                    "$lookup": {
+                        "from": "users",
+                        "localField": "user.$id",
+                        "foreignField": "_id",
+                        "as": "user_data"
+                    }
+                },
+                {
+                    "$unwind": "$user_data"
+                },
+                {
+                    "$match": {
+                        "user_data.cookie_id": cookie_id
+                    }
+                },
+                {
+                    "$count": "total"
+                }
+            ]
+            
+            result = await cls.aggregate(pipeline).to_list()
+            
+            # If no sessions found, return 0
+            return result[0]["total"] if result else 0
+            
+        except Exception as e:
+            raise SessionRetrievalFailedException(
+                message="Failed to count sessions for user by cookie",
+                note=f"cookie_id={cookie_id}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def get_starred_by_user_cookie(cls, cookie_id: str) -> List[Session]:
+        """
+        Get all starred sessions for a user by cookie ID, sorted by most recently updated first.
+        Uses MongoDB aggregation with $lookup to join with users collection.
+        
+        Args:
+            cookie_id: The user's cookie ID
+            
+        Returns:
+            List of starred Session documents sorted by most recently updated first
+            
+        Raises:
+            SessionRetrievalFailedException: If retrieval fails
+        """
+        try:
+            # Aggregation pipeline to lookup user by cookie_id and get starred sessions
+            pipeline = [
+                {
+                    "$lookup": {
+                        "from": "users",
+                        "localField": "user.$id",
+                        "foreignField": "_id",
+                        "as": "user_data"
+                    }
+                },
+                {
+                    "$unwind": "$user_data"
+                },
+                {
+                    "$match": {
+                        "user_data.cookie_id": cookie_id,
+                        "starred": True
+                    }
+                },
+                {
+                    "$sort": {"updated_at": -1}  # Most recently updated first
+                }
+            ]
+            
+            sessions = await cls.aggregate(pipeline).to_list()
+            
+            # Convert aggregation results back to Session documents
+            return [cls.model_validate(session) for session in sessions]
+            
+        except Exception as e:
+            raise SessionRetrievalFailedException(
+                message="Failed to retrieve starred sessions for user by cookie",
                 note=f"cookie_id={cookie_id}, error={str(e)}"
             )
 

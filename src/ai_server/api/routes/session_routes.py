@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
+from bson.errors import InvalidId
 
 from ai_server.api.services import SessionService
+from ai_server.api.dto.session import SessionStarredRequest
+from ai_server.api.exceptions.db_exceptions import SessionUpdateFailedException
 from ai_server.config import (
     DEFAULT_MESSAGE_PAGE_SIZE,
     MAX_MESSAGE_PAGE_SIZE,
@@ -84,6 +87,51 @@ async def get_all_user_sessions(
         }
     """
     return await SessionService.get_all_user_sessions(cookie_id=cookie_id)
+
+@router.get("/sessions/starred", tags=["Session"])
+async def get_starred_user_sessions(
+    cookie_id: str = Query(..., description="User's cookie ID")
+) -> dict:
+    """
+    Get all starred sessions for a user by cookie ID.
+    Returns starred sessions sorted by most recently updated first.
+    
+    Returns:
+        {
+            "count": int,
+            "results": List[dict]
+        }
+    """
+    return await SessionService.get_starred_user_sessions(cookie_id=cookie_id)
+
+@router.patch("/sessions/{session_id}/starred", tags=["Session"])
+async def update_session_starred(session_id: str, request: SessionStarredRequest) -> dict:
+    """
+    Update the starred status for a session.
+    
+    Args:
+        session_id: The session ID to update
+        request: The starred request containing starred status (true/false)
+    
+    Returns:
+        Dictionary with update info:
+        - session_updated: Whether the session was updated (true/false)
+        - session_id: The session ID that was updated
+        - starred: The starred status that was set (true/false)
+    
+    Raises:
+        HTTPException 400: If session ID format is invalid
+        HTTPException 404: If session not found
+        HTTPException 500: If update fails
+    """
+    try:
+        return await SessionService.update_session_starred(session_id=session_id, starred=request.starred)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail=f"Invalid session ID format: {session_id}")
+    except SessionUpdateFailedException as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        raise HTTPException(status_code=500, detail=f"Failed to update session starred status: {str(e)}")
 
 @router.delete("/sessions/{session_id}", tags=["Session"])
 async def delete_session(session_id: str) -> dict:

@@ -66,6 +66,11 @@ class SessionUpdateFailedException(AppException):
         super().__init__(message, note, 'DB-U-00', 500)
 
 
+class MessageUpdateFailedException(AppException):
+    def __init__(self, message: str, note: str):
+        super().__init__(message, note, 'DB-U-01', 500)
+
+
 # Deletion Exceptions (DB-D-XX)
 class MessageDeletionFailedException(AppException):
     def __init__(self, message: str, note: str):

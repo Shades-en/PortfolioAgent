@@ -1,3 +1,6 @@
+import asyncio
+import math
+
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
@@ -25,22 +28,39 @@ class SessionService:
             page_size: Number of messages per page
             
         Returns:
-            Dictionary with count and results: {
-                "count": int,
+            Dictionary with count, total_count, and results: {
+                "count": int,  # Number of messages in current page
+                "total_count": int,  # Total number of messages for the session
                 "results": List[dict]
             }
         
         Traced as CHAIN span for service-level orchestration.
         """
-        messages = await Message.get_paginated_by_session(
-            session_id=session_id,
-            page=page,
-            page_size=page_size
+        # Fetch paginated messages and total count in parallel
+        messages, total_count = await asyncio.gather(
+            Message.get_paginated_by_session(
+                session_id=session_id,
+                page=page,
+                page_size=page_size
+            ),
+            Message.count_by_session(session_id=session_id)
         )
+        
+        # Calculate pagination metadata
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 0
+        has_next = page < total_pages
+        has_previous = page > 1
+        
         # Use mode='json' to serialize ObjectIds and exclude Link fields
         results = [msg.model_dump(mode='json', exclude={'session', 'previous_summary'}) for msg in messages]
         return {
             "count": len(results),
+            "total_count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "has_next": has_next,
+            "has_previous": has_previous,
             "results": results
         }
     
@@ -86,22 +106,39 @@ class SessionService:
             page_size: Number of sessions per page
             
         Returns:
-            Dictionary with count and results: {
-                "count": int,
+            Dictionary with count, total_count, and results: {
+                "count": int,  # Number of sessions in current page
+                "total_count": int,  # Total number of sessions for the user
                 "results": List[dict]
             }
         
         Traced as CHAIN span for service-level orchestration.
         """
-        sessions = await Session.get_paginated_by_user_cookie(
-            cookie_id=cookie_id,
-            page=page,
-            page_size=page_size
+        # Fetch paginated sessions and total count in parallel
+        sessions, total_count = await asyncio.gather(
+            Session.get_paginated_by_user_cookie(
+                cookie_id=cookie_id,
+                page=page,
+                page_size=page_size
+            ),
+            Session.count_by_user_cookie(cookie_id=cookie_id)
         )
+        
+        # Calculate pagination metadata
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 0
+        has_next = page < total_pages
+        has_previous = page > 1
+        
         # Use mode='json' to serialize ObjectIds and exclude Link fields
         results = [session.model_dump(mode='json', exclude={'user'}) for session in sessions]
         return {
             "count": len(results),
+            "total_count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "has_next": has_next,
+            "has_previous": has_previous,
             "results": results
         }
     
@@ -129,6 +166,52 @@ class SessionService:
             "count": len(results),
             "results": results
         }
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
+    async def get_starred_user_sessions(cls, cookie_id: str) -> dict:
+        """
+        Get all starred sessions for a user by cookie ID, sorted by most recently updated first.
+        
+        Args:
+            cookie_id: The user's cookie ID
+            
+        Returns:
+            Dictionary with count and results: {
+                "count": int,
+                "results": List[dict]
+            }
+        
+        Traced as CHAIN span for service-level orchestration.
+        """
+        sessions = await Session.get_starred_by_user_cookie(cookie_id=cookie_id)
+        # Use mode='json' to serialize ObjectIds and exclude Link fields
+        results = [session.model_dump(mode='json', exclude={'user'}) for session in sessions]
+        return {
+            "count": len(results),
+            "results": results
+        }
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
+    async def update_session_starred(cls, session_id: str, starred: bool) -> dict:
+        """
+        Update the starred status for a session.
+        
+        Args:
+            session_id: The session ID to update
+            starred: Whether the session should be starred (True) or unstarred (False)
+            
+        Returns:
+            Dictionary with update info: {
+                "session_updated": bool,
+                "session_id": str,
+                "starred": bool
+            }
+        
+        Traced as CHAIN span for service-level orchestration.
+        """
+        return await Session.update_starred(session_id, starred)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)

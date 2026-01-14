@@ -5,6 +5,7 @@ import pymongo
 from bson import ObjectId
 
 from pydantic import Field, model_validator
+from enum import Enum
 from typing import Self, TYPE_CHECKING, List
 from datetime import datetime, timezone
 
@@ -14,7 +15,8 @@ from ai_server.utils.general import get_token_count
 from ai_server.utils.tracing import trace_operation, CustomSpanKinds
 from ai_server.api.exceptions.db_exceptions import (
     MessageRetrievalFailedException,
-    MessageDeletionFailedException
+    MessageDeletionFailedException,
+    MessageUpdateFailedException
 )
 from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, MAX_TURNS_TO_FETCH
 from ai_server.types.message import Role, FunctionCallRequest
@@ -22,6 +24,10 @@ from ai_server.types.message import Role, FunctionCallRequest
 if TYPE_CHECKING:
     from ai_server.schemas.session import Session
     from ai_server.schemas.summary import Summary
+
+class Feedback(Enum):
+    LIKE = "liked"
+    DISLIKE = "disliked"
 
 class Message(Document):
     role: Role
@@ -37,6 +43,7 @@ class Message(Document):
     error: bool = False
     session: Link[Session]
     order: int = 0
+    feedback: Feedback | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Settings:
@@ -106,6 +113,32 @@ class Message(Document):
             raise MessageRetrievalFailedException(
                 message="Failed to retrieve paginated messages for session",
                 note=f"session_id={session_id}, page={page}, page_size={page_size}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def count_by_session(cls, session_id: str) -> int:
+        """
+        Get the total count of messages for a session.
+        
+        Args:
+            session_id: The session ID
+            
+        Returns:
+            Total count of messages for the session
+            
+        Raises:
+            MessageRetrievalFailedException: If retrieval fails
+        """
+        try:
+            count = await cls.find(
+                cls.session._id == ObjectId(session_id)
+            ).count()
+            
+            return count
+        except Exception as e:
+            raise MessageRetrievalFailedException(
+                message="Failed to count messages for session",
+                note=f"session_id={session_id}, error={str(e)}"
             )
     
     @classmethod
@@ -199,6 +232,54 @@ class Message(Document):
             raise MessageRetrievalFailedException(
                 message="Failed to retrieve latest messages for session",
                 note=f"session_id={session_id}, max_turns={max_turns}, current_turn_number={current_turn_number}, error={str(e)}"
+            )
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
+    async def update_feedback(cls, message_id: str, feedback: Feedback | None) -> dict:
+        """
+        Update the feedback for a message.
+        
+        Args:
+            message_id: The message ID to update
+            feedback: The feedback value (LIKE, DISLIKE, or None for neutral/removal)
+            
+        Returns:
+            Dictionary with update info: {
+                "message_updated": bool,
+                "message_id": str,
+                "feedback": str | None
+            }
+            
+        Raises:
+            MessageUpdateFailedException: If update fails
+        
+        Traced as INTERNAL span for database operation.
+        """
+        try:
+            obj_id = ObjectId(message_id)
+            message = await cls.get(obj_id)
+            if not message:
+                raise MessageUpdateFailedException(
+                    message="Message not found",
+                    note=f"message_id={message_id}"
+                )
+            
+            message.feedback = feedback
+            await message.save()
+            
+            return {
+                "message_updated": True,
+                "message_id": message_id,
+                "feedback": feedback.value if feedback else None
+            }
+                    
+        except MessageUpdateFailedException:
+            raise
+        except Exception as e:
+            raise MessageUpdateFailedException(
+                message="Failed to update message feedback",
+                note=f"message_id={message_id}, feedback={feedback}, error={str(e)}"
             )
     
     @classmethod
