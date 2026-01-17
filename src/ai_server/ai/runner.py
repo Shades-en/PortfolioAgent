@@ -178,7 +178,7 @@ class Runner:
                     conversation_history.append(user_query_message)
 
                 # Generate LLM response and metadata in parallel
-                (ai_messages, tool_call), (new_summary, chat_name) = await self._generate_response_and_metadata(
+                (ai_messages, tool_call), (returned_summary, returned_chat_name) = await self._generate_response_and_metadata(
                     conversation_history=conversation_history,
                     previous_conversation=previous_conversation,
                     summary=summary,
@@ -187,6 +187,12 @@ class Runner:
                     on_stream_event=on_stream_event,
                 )
                 messages.extend(ai_messages)
+                
+                # Only update summary and chat_name if they are not None (which happens when tool calls override them in second iteration with None values)
+                if returned_summary is not None:
+                    new_summary = returned_summary
+                if returned_chat_name is not None:
+                    chat_name = returned_chat_name
 
                 # If tool call is not made then turn is completed. If tool call is made 
                 # then turn will be completed once AI executes the tool call, in the next iteration.
@@ -276,8 +282,7 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Test summary and chatname for chatcompeltion and responses with tool calls
-  # Summary 1 to 9 I dont see
+# Test summary and chatname for chatcompeltion with tool calls
 # Come up with a plan to streamline the sending of mesesage and showing the streamed response in UI for a new chat as well as the changing of url smoothly 
 
 # implement search chat feature

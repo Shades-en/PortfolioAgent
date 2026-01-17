@@ -12,6 +12,26 @@ from ai_server.utils.tracing import trace_operation
 class SessionService:
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
+    async def get_session(cls, session_id: str) -> dict:
+        """
+        Get a session by its ID.
+        
+        Args:
+            session_id: The session ID
+            
+        Returns:
+            Dictionary with session data or None if not found
+        
+        Traced as CHAIN span for service-level orchestration.
+        """
+        session = await Session.get_by_id(session_id=session_id)
+        if session is None:
+            return None
+        # Use mode='json' to serialize ObjectIds and exclude Link fields
+        return session.model_dump(mode='json', exclude={'user'})
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def get_session_messages(
         cls,
         session_id: str,
@@ -215,6 +235,40 @@ class SessionService:
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
+    async def rename_session(cls, session_id: str, name: str) -> dict:
+        """
+        Rename a session.
+        
+        Args:
+            session_id: The session ID to rename
+            name: New name for the session
+            
+        Returns:
+            Dictionary with update info: {
+                "session_updated": bool,
+                "session_id": str,
+                "name": str
+            }
+        
+        Traced as CHAIN span for service-level orchestration.
+        """
+        session = await Session.get_by_id(session_id=session_id)
+        if session is None:
+            return {
+                "session_updated": False,
+                "session_id": session_id,
+                "name": name
+            }
+        
+        await session.update_name(new_name=name)
+        return {
+            "session_updated": True,
+            "session_id": session_id,
+            "name": name
+        }
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def delete_session(cls, session_id: str) -> dict:
         """
         Delete a session and all its related data (messages, turns, summaries).
@@ -233,3 +287,23 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         return await Session.delete_with_related(session_id)
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
+    async def delete_all_user_sessions(cls, user_id: str) -> dict:
+        """
+        Delete all sessions for a user and all related data (messages, summaries).
+        
+        Args:
+            user_id: The user's MongoDB document ID
+            
+        Returns:
+            Dictionary with deletion counts: {
+                "sessions_deleted": int,
+                "messages_deleted": int,
+                "summaries_deleted": int
+            }
+        
+        Traced as CHAIN span for service-level orchestration.
+        """
+        return await Session.delete_all_by_user_id(user_id=user_id)

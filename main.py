@@ -14,7 +14,8 @@ from openinference.instrumentation.langchain import LangChainInstrumentor
 
 from ai_server import (
     AppException, router, lifespan, GenericTracingMiddleware,
-    setup_logging, BASE_PATH, HOST, PORT, RELOAD, WORKERS
+    setup_logging, BASE_PATH, HOST, PORT, RELOAD, WORKERS,
+    CORS_ALLOW_ORIGINS, CORS_ALLOW_CREDENTIALS, CORS_ALLOW_METHODS, CORS_ALLOW_HEADERS
 )
 
 load_dotenv()
@@ -51,10 +52,10 @@ app.add_middleware(GenericTracingMiddleware)
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
+    allow_methods=CORS_ALLOW_METHODS,
+    allow_headers=CORS_ALLOW_HEADERS,
 )
 
 app.include_router(router)

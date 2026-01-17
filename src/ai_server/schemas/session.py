@@ -255,6 +255,70 @@ class Session(Document):
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
+    async def delete_all_by_user_id(cls, user_id: str) -> dict:
+        """
+        Delete all sessions for a user by user_id and all related documents (messages, summaries).
+        
+        Args:
+            user_id: The user's MongoDB document ID
+        
+        Returns:
+            Dictionary with deletion counts: {
+                "sessions_deleted": int,
+                "messages_deleted": int, 
+                "summaries_deleted": int
+            }
+        
+        Raises:
+            SessionDeletionFailedException: If deletion fails
+        
+        Traced as INTERNAL span for database transaction with cascade delete.
+        """
+        from ai_server.schemas.message import Message
+        from ai_server.schemas.summary import Summary
+        from ai_server.db import MongoDB
+        
+        try:
+            obj_id = ObjectId(user_id)
+            
+            # Check if user has any sessions
+            sessions = await cls.find(cls.user.id == obj_id).to_list()
+            if not sessions:
+                return {
+                    "sessions_deleted": 0,
+                    "messages_deleted": 0,
+                    "summaries_deleted": 0
+                }
+            
+            client = MongoDB.get_client()
+            
+            async with client.start_session() as session_txn:
+                async with await session_txn.start_transaction():
+                    # Delete all sessions, messages, and summaries in parallel
+                    delete_results = await asyncio.gather(
+                        cls.find(cls.user.id == obj_id).delete(session=session_txn),
+                        Message.find({"session.user.$id": obj_id}).delete(session=session_txn),
+                        Summary.find({"session.user.$id": obj_id}).delete(session=session_txn)
+                    )
+                    
+                    sessions_deleted = delete_results[0].deleted_count if delete_results[0] else 0
+                    messages_deleted = delete_results[1].deleted_count if delete_results[1] else 0
+                    summaries_deleted = delete_results[2].deleted_count if delete_results[2] else 0
+                    
+                    return {
+                        "sessions_deleted": sessions_deleted,
+                        "messages_deleted": messages_deleted,
+                        "summaries_deleted": summaries_deleted
+                    }
+                    
+        except Exception as e:
+            raise SessionDeletionFailedException(
+                message="Failed to delete all sessions for user",
+                note=f"user_id={user_id}, error={str(e)}"
+            )
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
     async def delete_with_related(cls, session_id: str) -> dict:
         """
         Delete session and all related documents (messages, summaries) in a transaction.
