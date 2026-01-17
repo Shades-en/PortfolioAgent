@@ -7,7 +7,7 @@ from ai_server.schemas.summary import Summary
 from ai_server.types.message import MessageDTO, FunctionCallRequest, Role
 from ai_server.ai.tools.tools import Tool
 from ai_server.config import BASE_MODEL
-from ai_server.utils.general import generate_id
+from ai_server.utils.general import generate_id, generate_order
 
 
 StreamEvent = dict[str, Any]
@@ -118,7 +118,7 @@ class LLMProvider(ABC):
         return ""
     
     @classmethod
-    async def mock_generate_response(cls) -> tuple[List[MessageDTO], bool]:
+    async def mock_generate_response(cls, step: int) -> tuple[List[MessageDTO], bool]:
         """
         Mock implementation of generate_response for testing purposes.
         Returns a dummy AI message with random content and tool_call as False.
@@ -130,7 +130,7 @@ class LLMProvider(ABC):
             role=Role.AI,
             content="This is a mock AI response. The actual LLM call has been bypassed for testing purposes.",
             metadata={"mock": True},
-            order=4,
+            order=generate_order(step, 2),
             response_id=f"mock_response_{generate_id(8)}"
         )
         

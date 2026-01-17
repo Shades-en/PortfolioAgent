@@ -11,7 +11,7 @@ from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
 )
-from ai_server.utils.general import generate_id
+from ai_server.utils.general import generate_id, generate_order
 from ai_server.utils.tracing import trace_method, track_state_change, CustomSpanKinds
 
 logger = logging.getLogger(__name__)
@@ -243,7 +243,7 @@ class SessionManager():
             content="I apologize, but something went wrong while processing your request. Please try again.",
             function_call=None,
             token_count=0,
-            order=4,
+            order=generate_order(self.state.step, 2),
             error=True,
             response_id=f"error_response_{generate_id(8)}"
         )

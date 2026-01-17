@@ -81,6 +81,8 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         messages: List[MessageDTO] = []
         content = output.content
         tool_calls = output.tool_calls
+
+        order = 2  # 1 prefix is assigned to human message, 2 prefix for AI
         try:
             if content:
                 message = MessageDTO(
@@ -89,7 +91,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                     metadata={},
                     content=content,
                     function_call=None,
-                    order=4,
+                    order=generate_order(step, order),
                     response_id=response.id
                 )
                 return [message]
@@ -97,7 +99,6 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                 # Collect function calls for parallel execution
                 function_call_tasks = []
                 function_call_messages = []
-                order = 2  # 1 prefix is assigned to human message, 2 prefix for AI
                 
                 for tool_call in tool_calls:
                     function_call = FunctionCallRequest(
@@ -110,7 +111,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         metadata={},
                         content='',
                         function_call=function_call,
-                        order=generate_order(order, step),
+                        order=generate_order(step, order),
                         response_id=response.id
                     )
                     order += 1

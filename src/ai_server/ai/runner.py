@@ -88,7 +88,7 @@ class Runner:
         # Use mock methods if MOCK_AI_RESPONSE is enabled
         if config.MOCK_AI_RESPONSE:
             return await asyncio.gather(
-                self.llm_provider.mock_generate_response(),
+                self.llm_provider.mock_generate_response(step=self.session_manager.state.step),
                 self.llm_provider.mock_generate_summary_or_chat_name(
                     query=query,
                     new_chat=self.session_manager.state.new_chat,
@@ -164,7 +164,7 @@ class Runner:
             metadata={},
             content=query,
             function_call=None,
-            order=generate_order(1, self.session_manager.state.step),
+            order=generate_order(self.session_manager.state.step, 1),
         )
 
         try:
@@ -277,7 +277,6 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Step is showing as 3 for tool calls check.
 # Test summary and chatname for chatcompeltion and responses with tool calls
   # Summary 1 to 9 I dont see
 # Come up with a plan to streamline the sending of mesesage and showing the streamed response in UI for a new chat as well as the changing of url smoothly 

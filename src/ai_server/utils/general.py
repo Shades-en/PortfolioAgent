@@ -61,7 +61,7 @@ def safe_get_arg(args: tuple, index: int, default=None):
     except (IndexError, TypeError):
         return default
 
-def generate_order(order: int, step: int) -> int:
+def generate_order(step: int, order: int) -> int:
     return step*10 + order
 
 __all__ = [
