@@ -167,7 +167,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
                 role = "user"
             case Role.AI:
                 role = "assistant"
-                if message.tool_call_id != "null":
+                if message.tool_call_id is not None:
                     return {
                         "call_id": message.tool_call_id,
                         "type": "function_call",
@@ -237,7 +237,6 @@ class OpenAIResponsesAPI(OpenAIProvider):
                 elif resp.type == "message":
                     message = MessageDTO(
                         role=Role.AI,
-                        tool_call_id="null",
                         metadata={},
                         content=resp.content[0].text,
                         function_call=None,

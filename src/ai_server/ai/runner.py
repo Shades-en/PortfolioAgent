@@ -160,7 +160,6 @@ class Runner:
 
         user_query_message = MessageDTO(
             role=Role.HUMAN,
-            tool_call_id="null",
             metadata={},
             content=query,
             function_call=None,

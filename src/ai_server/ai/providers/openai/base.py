@@ -477,7 +477,6 @@ class OpenAIProvider(LLMProvider, ABC):
         
         return MessageDTO(
             role=Role.SYSTEM,
-            tool_call_id="null",
             metadata=metadata or {},
             content=content,
             function_call=None,

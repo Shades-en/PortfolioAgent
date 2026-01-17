@@ -35,7 +35,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                 role = "user"
             case Role.AI:
                 role = "assistant"
-                if message.tool_call_id != "null":
+                if message.tool_call_id is not None:
                     return {
                         "role": role,
                         "tool_calls": [
@@ -87,7 +87,6 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             if content:
                 message = MessageDTO(
                     role=Role.AI,
-                    tool_call_id="null",
                     metadata={},
                     content=content,
                     function_call=None,

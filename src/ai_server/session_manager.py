@@ -238,7 +238,6 @@ class SessionManager():
         # Create error response DTO
         error_message_dto = MessageDTO(
             role=Role.AI.value,
-            tool_call_id="null",
             metadata={"error_type": "insertion_failure"},
             content="I apologize, but something went wrong while processing your request. Please try again.",
             function_call=None,

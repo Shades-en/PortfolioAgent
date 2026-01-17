@@ -23,7 +23,7 @@ class MessageDTO(BaseModel):
     """
     role: Role
     response_id: str | None = None
-    tool_call_id: str = "null"
+    tool_call_id: str | None = None
     metadata: dict = Field(default_factory=dict)
     content: str | None = None
     function_call: FunctionCallRequest | None = None

@@ -31,9 +31,8 @@ class Feedback(Enum):
 
 class Message(Document):
     role: Role
-    # tool_call_id is given "null" when not exists because redis tag field does not accept None
     response_id: str | None
-    tool_call_id: str 
+    tool_call_id: str | None = None
     metadata: dict
     content: str | None
     function_call: FunctionCallRequest | None
