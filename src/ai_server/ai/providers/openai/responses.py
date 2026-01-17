@@ -11,7 +11,6 @@ from ai_server.ai.providers.utils import (
     create_tool_input_start_event,
     create_tool_input_delta_event,
     create_tool_input_available_event,
-    create_tool_output_available_event,
     create_error_event,
 )
 from ai_server.ai.tools.tools import Tool
@@ -27,13 +26,13 @@ from ai_server.constants import (
     OPENAI_EVENT_FUNCTION_ARGS_DONE,
     OPENAI_EVENT_FAILED,
 )
+from ai_server.utils.general import generate_order
 from ai_server.utils.tracing import trace_method
 from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 
-import asyncio
 import json
 from pydantic import ValidationError
 import openai
@@ -199,6 +198,8 @@ class OpenAIResponsesAPI(OpenAIProvider):
         cls, 
         response: Response, 
         tools: List[Tool],
+        step: int,
+        stream: bool = False,
         on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
         outputs = response.output
@@ -209,6 +210,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
         function_call_messages = []
         
         try:
+            order = 2 # 1 prefix is assigned to human message, 2 prefix for AI
             for resp in outputs:
                 if resp.type == "function_call":
                     function_call = FunctionCallRequest(
@@ -221,10 +223,12 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         metadata={},
                         content='',
                         function_call=function_call,
-                        order=2,
+                        order=generate_order(step, order),
                         response_id=response.id
                     )
-                    
+                    order += 1
+                    messages.append(message_ai)
+
                     # Create task for parallel execution
                     task = cls._call_function(function_call, tools)
                     function_call_tasks.append(task)
@@ -237,39 +241,26 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         metadata={},
                         content=resp.content[0].text,
                         function_call=None,
-                        order=4,
+                        order=generate_order(step, order),
                         response_id=response.id
                     )
                     messages.append(message)
+                    order += 1
                 else:
                     raise UnrecognizedMessageTypeException(message="Unrecognized message type", note=f"Message type: {resp.type} - Implementation does not exist")
             
-            # Execute all function calls in parallel
+            # Execute all function calls in parallel and create tool messages
             if function_call_tasks:
-                function_responses = await asyncio.gather(*function_call_tasks)
-                
-                # Create tool messages with the responses
-                for i, (message_ai, call_id) in enumerate(function_call_messages):
-                    tool_output = function_responses[i]
-                    if hasattr(tool_output, "model_dump"):
-                        tool_output_payload = tool_output.model_dump()
-                    else:
-                        tool_output_payload = tool_output
-                    await dispatch_stream_event(
-                        on_stream_event,
-                        create_tool_output_available_event(call_id, tool_output_payload),
-                    )
-                    message_tool = MessageDTO(
-                        role=Role.TOOL,
-                        tool_call_id=call_id,
-                        metadata={},
-                        content=str(tool_output),
-                        function_call=None,
-                        order=3,
-                        response_id=response.id
-                    )
-                    messages.append(message_ai)
-                    messages.append(message_tool)
+                tool_messages = await cls._process_tool_call_responses(
+                    function_call_tasks=function_call_tasks,
+                    function_call_messages=function_call_messages,
+                    response_id=response.id,
+                    step=step,
+                    order=order,
+                    stream=stream,
+                    on_stream_event=on_stream_event,
+                )
+                messages.extend(tool_messages)
             return messages
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))

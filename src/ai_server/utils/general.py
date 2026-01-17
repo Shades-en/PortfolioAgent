@@ -61,10 +61,14 @@ def safe_get_arg(args: tuple, index: int, default=None):
     except (IndexError, TypeError):
         return default
 
+def generate_order(order: int, step: int) -> int:
+    return step*10 + order
+
 __all__ = [
     "generate_id", 
     "get_env_int", 
     "_env_flag",
     "get_token_count",
     "safe_get_arg",
+    "generate_order",
 ]

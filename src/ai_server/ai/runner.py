@@ -16,7 +16,7 @@ from ai_server.schemas import Summary
 from ai_server.session_manager import SessionManager
 from ai_server.api.exceptions.agent_exceptions import MaxStepsReachedException
 from ai_server.utils.tracing import trace_method
-from ai_server.utils.general import generate_id
+from ai_server.utils.general import generate_id, generate_order
 from ai_server.constants import (
     STREAM_EVENT_START,
     STREAM_EVENT_ERROR,
@@ -78,6 +78,7 @@ class Runner:
             summary: Current summary (if any)
             query: User's query
             tool_call: Whether this is a tool call iteration
+            on_stream_event: Callback for streaming events
             
         Returns:
             Tuple of ((messages, tool_call), (new_summary, chat_name))
@@ -102,6 +103,7 @@ class Runner:
             self.llm_provider.generate_response(
                 conversation_history=conversation_history,
                 tools=self.agent.tools,
+                step=self.session_manager.state.step,
                 stream=stream_enabled,
                 on_stream_event=on_stream_event if stream_enabled else None,
             ),
@@ -162,7 +164,7 @@ class Runner:
             metadata={},
             content=query,
             function_call=None,
-            order=1,
+            order=generate_order(1, self.session_manager.state.step),
         )
 
         try:
@@ -275,6 +277,9 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
+# Step is showing as 3 for tool calls check.
 # Test summary and chatname for chatcompeltion and responses with tool calls
+  # Summary 1 to 9 I dont see
+# Come up with a plan to streamline the sending of mesesage and showing the streamed response in UI for a new chat as well as the changing of url smoothly 
+
 # implement search chat feature
-# implement starred messages endpoint and modify db schema

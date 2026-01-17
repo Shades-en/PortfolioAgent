@@ -13,11 +13,11 @@ from ai_server.ai.tools.tools import Tool
 from ai_server.types.message import MessageDTO, Role, FunctionCallRequest
 from ai_server.config import BASE_MODEL
 from ai_server.utils.tracing import trace_method
+from ai_server.utils.general import generate_order
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 
-import asyncio
 import json
 from pydantic import ValidationError
 import openai
@@ -73,6 +73,8 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         cls, 
         response: ChatCompletion, 
         tools: List[Tool],
+        step: int,
+        stream: bool = False,
         on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
         output = response.choices[0].message
@@ -95,6 +97,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                 # Collect function calls for parallel execution
                 function_call_tasks = []
                 function_call_messages = []
+                order = 2  # 1 prefix is assigned to human message, 2 prefix for AI
                 
                 for tool_call in tool_calls:
                     function_call = FunctionCallRequest(
@@ -107,31 +110,28 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                         metadata={},
                         content='',
                         function_call=function_call,
-                        order=2,
+                        order=generate_order(order, step),
                         response_id=response.id
                     )
-                    
+                    order += 1
+                    messages.append(message_ai)
+
                     # Create task for parallel execution
                     task = cls._call_function(function_call, tools)
                     function_call_tasks.append(task)
                     function_call_messages.append((message_ai, tool_call.id))
                 
-                # Execute all function calls in parallel
-                function_responses = await asyncio.gather(*function_call_tasks)
-                
-                # Create tool messages with the responses
-                for i, (message_ai, call_id) in enumerate(function_call_messages):
-                    message_tool = MessageDTO(
-                        role=Role.TOOL,
-                        tool_call_id=call_id,
-                        metadata={},
-                        content=function_responses[i],
-                        function_call=None,
-                        order=3,
-                        response_id=response.id
-                    )
-                    messages.append(message_ai)
-                    messages.append(message_tool)
+                # Execute all function calls in parallel and create tool messages
+                tool_messages = await cls._process_tool_call_responses(
+                    function_call_tasks=function_call_tasks,
+                    function_call_messages=function_call_messages,
+                    response_id=response.id,
+                    step=step,
+                    order=order,
+                    stream=stream,
+                    on_stream_event=on_stream_event,
+                )
+                messages.extend(tool_messages)
             return messages
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))

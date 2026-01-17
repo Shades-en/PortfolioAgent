@@ -19,7 +19,7 @@ DEV_MODE = _env_flag("DEV_MODE", False)
 BASE_MODEL = os.getenv("BASE_MODEL", GPT_4_1_MINI)
 BASE_EMBEDDING_MODEL = os.getenv("BASE_EMBEDDING_MODEL", TEXT_EMBEDDING_3_SMALL)
 
-# Context Configuration
+# Context Configuration - For Summary
 MAX_TOKEN_THRESHOLD = int(os.getenv("MAX_TOKEN_THRESHOLD", 50000))
 MAX_TURNS_TO_FETCH = int(os.getenv("MAX_TURNS_TO_FETCH", 100))
 

@@ -6,10 +6,12 @@ from ai_server.ai.providers.llm_provider import (
 from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
 from ai_server.ai.prompts.chat_name import CHAT_NAME_SYSTEM_PROMPT, CHAT_NAME_USER_PROMPT
+from ai_server.ai.providers.utils import create_tool_output_available_event
+
+from ai_server.utils.general import get_token_count, generate_order
+from ai_server.utils.tracing import trace_method
 
 from ai_server.schemas.summary import Summary
-from ai_server.utils.general import get_token_count
-from ai_server.utils.tracing import trace_method
 from ai_server.types.message import MessageDTO, Role
 from ai_server.config import (
     BASE_MODEL, 
@@ -28,6 +30,7 @@ from ai_server.constants import (
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 import logging
 
+import asyncio
 import json
 
 import openai
@@ -112,11 +115,83 @@ class OpenAIProvider(LLMProvider, ABC):
         pass
 
     @classmethod
+    async def _process_tool_call_responses(
+        cls,
+        function_call_tasks: List,
+        function_call_messages: List[tuple[MessageDTO, str]],
+        response_id: str,
+        step: int,
+        order: int,
+        stream: bool = False,
+        on_stream_event: StreamCallback | None = None,
+    ) -> List[MessageDTO]:
+        """
+        Common method to process tool call responses with error handling.
+        
+        Args:
+            function_call_tasks: List of async tasks for tool execution
+            function_call_messages: List of (message_ai, call_id) tuples
+            response_id: Response ID for the messages
+            step: Current step number
+            order: Starting order number for messages
+            stream: Whether streaming is enabled
+            on_stream_event: Callback for streaming events
+            
+        Returns:
+            List of MessageDTO objects (AI messages + tool response messages)
+        """
+        
+        messages: List[MessageDTO] = []
+        
+        if not function_call_tasks:
+            return messages
+        
+        # Execute all function calls in parallel with exception handling
+        function_responses = await asyncio.gather(*function_call_tasks, return_exceptions=True)
+        
+        # Create tool messages with the responses
+        for i, (message_ai, call_id) in enumerate(function_call_messages):
+            tool_output = function_responses[i]
+            tool_success = not isinstance(tool_output, Exception)
+            
+            if tool_success:
+                if hasattr(tool_output, "model_dump"):
+                    tool_output_payload = tool_output.model_dump()
+                else:
+                    tool_output_payload = tool_output
+                if stream:
+                    await dispatch_stream_event(
+                        on_stream_event,
+                        create_tool_output_available_event(call_id, tool_output_payload),
+                    )
+                content = str(tool_output)
+            else:
+                content = f"Error: {str(tool_output)}"
+            
+            message_tool = MessageDTO(
+                role=Role.TOOL,
+                tool_call_id=call_id,
+                metadata={
+                    "tool_success": tool_success
+                },
+                content=content,
+                function_call=None,
+                order=generate_order(step, order),
+                response_id=response_id
+            )
+            messages.append(message_tool)
+        
+        return messages
+
+    @classmethod
     @abstractmethod
     async def _handle_ai_messages_and_tool_calls(
         cls, 
         response: any, 
         tools: List[Tool],
+        step: int,
+        stream: bool = False,
+        on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
         """Handle AI response and tool calls. Implemented by subclasses."""
         pass
@@ -134,6 +209,7 @@ class OpenAIProvider(LLMProvider, ABC):
         tools: List[Tool] = [],
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL,
+        step: int = 1,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
     ) -> tuple[List[MessageDTO], bool]:
@@ -156,7 +232,9 @@ class OpenAIProvider(LLMProvider, ABC):
         ai_messages = await cls._handle_ai_messages_and_tool_calls(
             response,
             tools,
-            on_stream_event=on_stream_event,
+            step,
+            stream,
+            on_stream_event,
         )
         if stream:
             await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_FINISH})

@@ -48,6 +48,8 @@ class LLMProvider(ABC):
         cls, 
         response: any, 
         tools: List[Tool],
+        step: int,
+        stream: bool = False,
         on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
         """
