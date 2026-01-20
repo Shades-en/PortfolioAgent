@@ -282,7 +282,8 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Test summary and chatname for chatcompeltion with tool calls
 # Come up with a plan to streamline the sending of mesesage and showing the streamed response in UI for a new chat as well as the changing of url smoothly 
+# Change entire Message type???? Or Convert from current message type to parts message??
+
 
 # implement search chat feature
