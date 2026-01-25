@@ -6,3 +6,4 @@ venv
 .eggs/
 .temp/
 .tmp/
+.vscode/settings.json

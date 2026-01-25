@@ -14,7 +14,7 @@ from ai_server.ai.providers.utils import (
     create_error_event,
 )
 from ai_server.ai.tools.tools import Tool
-from ai_server.types.message import MessageDTO, Role, FunctionCallRequest
+from ai_server.types.message import MessageAITextPart, MessageDTO, MessageToolPart, Role, ToolPartState
 from ai_server.config import BASE_MODEL
 from ai_server.constants import (
     OPENAI_EVENT_RESPONSE_CREATED,
@@ -26,7 +26,6 @@ from ai_server.constants import (
     OPENAI_EVENT_FUNCTION_ARGS_DONE,
     OPENAI_EVENT_FAILED,
 )
-from ai_server.utils.general import generate_order
 from ai_server.utils.tracing import trace_method
 from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
@@ -160,32 +159,52 @@ class OpenAIResponsesAPI(OpenAIProvider):
             return final_response
 
     @classmethod
-    def _convert_to_openai_compatible_messages(cls, message: MessageDTO) -> Dict:
-        role = "user"
-        match message.role:
-            case Role.HUMAN:
-                role = "user"
-            case Role.AI:
-                role = "assistant"
-                if message.tool_call_id is not None:
-                    return {
-                        "call_id": message.tool_call_id,
-                        "type": "function_call",
-                        "name": message.function_call.name,
-                        "arguments": json.dumps(message.function_call.arguments),
-                    }
-            case Role.SYSTEM:
-                role = "developer"
-            case Role.TOOL:
-                return {
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id,
-                    "output": message.content,
-                }
-        return {
-            "role": role,
-            "content": message.content,
-        }
+    def _convert_to_openai_compatible_messages(cls, messages: List[MessageDTO]) -> List[Dict]:
+        converted_messages = []
+        for message in messages:
+            match message.role:
+                case Role.HUMAN:
+                    for part in message.parts:
+                        converted_messages.append({
+                            "role": message.role.value,
+                            "content": part.text,
+                        })
+                case Role.AI:
+                    for part in message.parts:
+                        if isinstance(part, MessageAITextPart):
+                            converted_messages.append({
+                                "role": message.role.value,
+                                "content": part.text,
+                            })
+                        elif isinstance(part, MessageToolPart):
+                            # Always send function_call if we have input (regardless of state)
+                            if part.toolCallId and part.input and (
+                                part.state == ToolPartState.INPUT_AVAILABLE or part.state == ToolPartState.OUTPUT_AVAILABLE
+                            ):
+                                tool_input_message = {
+                                    "call_id": part.toolCallId,
+                                    "type": "function_call",
+                                    "name": part.tool_name,
+                                    "arguments": json.dumps(part.input),
+                                }
+                                converted_messages.append(tool_input_message)
+                            
+                            # Send function_call_output if we have output and state is OUTPUT_AVAILABLE
+                            if part.toolCallId and part.output and part.state == ToolPartState.OUTPUT_AVAILABLE:
+                                output_value = part.output if isinstance(part.output, str) else json.dumps(part.output)
+                                tool_output_message = {
+                                    "call_id": part.toolCallId,
+                                    "type": "function_call_output",
+                                    "output": output_value,
+                                }
+                                converted_messages.append(tool_output_message)
+                case Role.SYSTEM:
+                    for part in message.parts:
+                        converted_messages.append({
+                            "role": "developer" if message.role == Role.SYSTEM else message.role.value,
+                            "content": part.text,
+                        })
+        return converted_messages
 
     @classmethod
     @trace_method(
@@ -198,69 +217,43 @@ class OpenAIResponsesAPI(OpenAIProvider):
         cls, 
         response: Response, 
         tools: List[Tool],
-        step: int,
+        ai_message: MessageDTO | None = None,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
-    ) -> List[MessageDTO]:
+    ) -> bool:
         outputs = response.output
-        messages: List[MessageDTO] = []
         
-        # Collect function calls and regular messages separately
+        # Collect function calls
         function_call_tasks = []
-        function_call_messages = []
         
         try:
-            order = 2 # 1 prefix is assigned to human message, 2 prefix for AI
             for resp in outputs:
                 if resp.type == "function_call":
-                    function_call = FunctionCallRequest(
-                        name=resp.name,
-                        arguments=json.loads(resp.arguments),
-                    )
-                    message_ai = MessageDTO(
-                        role=Role.AI,
+                    ai_message.update_ai_tool_input_message(
+                        tool_name=resp.name,
                         tool_call_id=resp.call_id,
-                        metadata={},
-                        content='',
-                        function_call=function_call,
-                        order=generate_order(step, order),
-                        response_id=response.id
+                        input_data=json.loads(resp.arguments)
                     )
-                    order += 1
-                    messages.append(message_ai)
-
                     # Create task for parallel execution
-                    task = cls._call_function(function_call, tools)
-                    function_call_tasks.append(task)
-                    function_call_messages.append((message_ai, resp.call_id))
+                    task = cls._call_function(function_name=resp.name, function_arguments=json.loads(resp.arguments), tools=tools)
+                    if resp.call_id:
+                        function_call_tasks.append((resp.call_id, task))
                     
                 elif resp.type == "message":
-                    message = MessageDTO(
-                        role=Role.AI,
-                        metadata={},
-                        content=resp.content[0].text,
-                        function_call=None,
-                        order=generate_order(step, order),
-                        response_id=response.id
-                    )
-                    messages.append(message)
-                    order += 1
+                    ai_message.update_ai_text_message(text=resp.content[0].text)
                 else:
                     raise UnrecognizedMessageTypeException(message="Unrecognized message type", note=f"Message type: {resp.type} - Implementation does not exist")
             
             # Execute all function calls in parallel and create tool messages
             if function_call_tasks:
-                tool_messages = await cls._process_tool_call_responses(
+                await cls._process_tool_call_responses(
                     function_call_tasks=function_call_tasks,
-                    function_call_messages=function_call_messages,
-                    response_id=response.id,
-                    step=step,
-                    order=order,
+                    ai_message=ai_message,
                     stream=stream,
                     on_stream_event=on_stream_event,
                 )
-                messages.extend(tool_messages)
-            return messages
+                return True
+            return False
         except ValidationError as e:
             raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
 

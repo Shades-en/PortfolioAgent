@@ -10,10 +10,9 @@ from ai_server.ai.providers.utils import (
     create_tool_input_available_event,
 )
 from ai_server.ai.tools.tools import Tool
-from ai_server.types.message import MessageDTO, Role, FunctionCallRequest
+from ai_server.types.message import MessageDTO, Role, MessageAITextPart, MessageToolPart, ToolPartState
 from ai_server.config import BASE_MODEL
 from ai_server.utils.tracing import trace_method
-from ai_server.utils.general import generate_order
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
@@ -28,39 +27,51 @@ from typing import List, Dict
 class OpenAIChatCompletionAPI(OpenAIProvider):
 
     @classmethod
-    def _convert_to_openai_compatible_messages(cls, message: MessageDTO) -> Dict:
-        role = "user"
-        match message.role:
-            case Role.HUMAN:
-                role = "user"
-            case Role.AI:
-                role = "assistant"
-                if message.tool_call_id is not None:
-                    return {
-                        "role": role,
-                        "tool_calls": [
-                            {
-                                "id": message.tool_call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": message.function_call.name,
-                                    "arguments": json.dumps(message.function_call.arguments),
-                                },
-                            }
-                        ],
-                    }
-            case Role.SYSTEM:
-                role = "developer"
-            case Role.TOOL:
-                return {
-                    "role": "tool",
-                    "tool_call_id": message.tool_call_id,
-                    "content": message.content,
-                }
-        return {
-            "role": role,
-            "content": message.content,
-        }
+    def _convert_to_openai_compatible_messages(cls, messages: List[MessageDTO]) -> List[Dict]:
+        converted_messages = []
+        for message in messages:
+            match message.role:
+                case Role.HUMAN:
+                    for part in message.parts:
+                        converted_messages.append({
+                            "role": message.role.value,
+                            "content": part.text,
+                        })
+                case Role.AI:
+                    for part in message.parts:
+                        if isinstance(part, MessageAITextPart):
+                            converted_messages.append({
+                                "role": message.role.value,
+                                "content": part.text,
+                            })
+                        elif isinstance(part, MessageToolPart):
+                            # Add assistant message with tool call
+                            if part.toolCallId and part.input and part.state == ToolPartState.INPUT_AVAILABLE:
+                                converted_messages.append({
+                                    "role": "assistant",
+                                    "tool_calls": [{
+                                        "id": part.toolCallId,
+                                        "type": "function",
+                                        "function": {
+                                            "name": part.tool_name,
+                                            "arguments": json.dumps(part.input),
+                                        },
+                                    }]
+                                })
+                            # Add tool response message
+                            if part.toolCallId and part.output and part.state == ToolPartState.OUTPUT_AVAILABLE:
+                                converted_messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": part.toolCallId,
+                                    "content": json.dumps(part.output) if isinstance(part.output, dict) else str(part.output),
+                                })
+                case Role.SYSTEM:
+                    for part in message.parts:
+                        converted_messages.append({
+                            "role": "developer" if message.role == Role.SYSTEM else message.role.value,
+                            "content": part.text,
+                        })
+        return converted_messages
 
     @classmethod
     @trace_method(
@@ -73,68 +84,49 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         cls, 
         response: ChatCompletion, 
         tools: List[Tool],
-        step: int,
+        ai_message: MessageDTO,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
-    ) -> List[MessageDTO]:
+    ) -> bool:
         output = response.choices[0].message
-        messages: List[MessageDTO] = []
         content = output.content
         tool_calls = output.tool_calls
 
-        order = 2  # 1 prefix is assigned to human message, 2 prefix for AI
+        # Collect function calls
+        function_call_tasks = []
+        
         try:
+            # Add text content if present
             if content:
-                message = MessageDTO(
-                    role=Role.AI,
-                    metadata={},
-                    content=content,
-                    function_call=None,
-                    order=generate_order(step, order),
-                    response_id=response.id
-                )
-                return [message]
+                ai_message.update_ai_text_message(text=content)
+            
+            # Add tool calls if present
             if tool_calls:
-                # Collect function calls for parallel execution
-                function_call_tasks = []
-                function_call_messages = []
-                
                 for tool_call in tool_calls:
-                    function_call = FunctionCallRequest(
-                        name=tool_call.function.name,
-                        arguments=json.loads(tool_call.function.arguments),
-                    )
-                    message_ai = MessageDTO(
-                        role=Role.AI,
+                    ai_message.update_ai_tool_input_message(
+                        tool_name=tool_call.function.name,
                         tool_call_id=tool_call.id,
-                        metadata={},
-                        content='',
-                        function_call=function_call,
-                        order=generate_order(step, order),
-                        response_id=response.id
+                        input_data=json.loads(tool_call.function.arguments)
                     )
-                    order += 1
-                    messages.append(message_ai)
-
                     # Create task for parallel execution
-                    task = cls._call_function(function_call, tools)
-                    function_call_tasks.append(task)
-                    function_call_messages.append((message_ai, tool_call.id))
+                    task = cls._call_function(
+                        function_name=tool_call.function.name,
+                        function_arguments=json.loads(tool_call.function.arguments),
+                        tools=tools
+                    )
+                    function_call_tasks.append((tool_call.id, task))
                 
-                # Execute all function calls in parallel and create tool messages
-                tool_messages = await cls._process_tool_call_responses(
+                # Execute all function calls in parallel and update tool parts
+                await cls._process_tool_call_responses(
                     function_call_tasks=function_call_tasks,
-                    function_call_messages=function_call_messages,
-                    response_id=response.id,
-                    step=step,
-                    order=order,
+                    ai_message=ai_message,
                     stream=stream,
                     on_stream_event=on_stream_event,
                 )
-                messages.extend(tool_messages)
-            return messages
+                return True
+            return False
         except ValidationError as e:
-            raise MessageParseException(message="Failed to parse AI response from openai responses", note=str(e))
+            raise MessageParseException(message="Failed to parse AI response from openai chat completion", note=str(e))
 
     @classmethod
     async def _stream_chat_completion(

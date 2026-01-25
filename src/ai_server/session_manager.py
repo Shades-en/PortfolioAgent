@@ -5,13 +5,13 @@ import logging
 
 from ai_server.types.state import State
 from ai_server.types.message import MessageDTO
-from ai_server.schemas import User, Session, Message, Summary, Role
-from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD
+from ai_server.schemas import User, Session, Message, Summary
+from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD, MONGODB_OBJECTID_LENGTH
 from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
 )
-from ai_server.utils.general import generate_id, generate_order
+from ai_server.utils.general import generate_id
 from ai_server.utils.tracing import trace_method, track_state_change, CustomSpanKinds
 
 logger = logging.getLogger(__name__)
@@ -22,13 +22,11 @@ class SessionManager():
         user_id: str | None, 
         session_id: str | None, 
         user_cookie: str,
-        turn_number: int,
         new_chat: bool, 
         new_user: bool,
         state: dict = {}, 
     ):
         self.state = self._inititialise_state(
-            turn_number=turn_number,
             new_chat=new_chat,
             new_user=new_user,
             state=state
@@ -41,15 +39,11 @@ class SessionManager():
 
     def _inititialise_state(
         self, 
-        turn_number: int, 
         new_chat: bool, 
         new_user: bool,
         state: dict
     ) -> State:
-        if new_chat:
-            turn_number = 1
         state = State(
-            turn_number=turn_number,
             new_chat=new_chat,
             new_user=new_user,
             user_defined_state=state
@@ -145,12 +139,11 @@ class SessionManager():
         """
         return [
             MessageDTO(
+                id=str(msg.id),
                 role=msg.role,
-                tool_call_id=msg.tool_call_id,
+                parts=msg.parts,
                 metadata=msg.metadata,
-                content=msg.content,
-                function_call=msg.function_call,
-                response_id=msg.response_id,
+                created_at=msg.created_at
             )
             for msg in messages
         ]
@@ -180,6 +173,8 @@ class SessionManager():
         context_task = self._fetch_context()
         user_or_session_task = self._fetch_user_or_session()
         (all_messages, summary), _ = await asyncio.gather(context_task, user_or_session_task)
+        if self.session:
+            self.update_state(turn_number=self.session.latest_turn_number+1)
         
         if not all_messages:
             return [], summary
@@ -235,16 +230,12 @@ class SessionManager():
         Returns:
             List containing user query and error response message
         """
-        # Create error response DTO
-        error_message_dto = MessageDTO(
-            role=Role.AI.value,
-            metadata={"error_type": "insertion_failure"},
-            content="I apologize, but something went wrong while processing your request. Please try again.",
-            function_call=None,
-            token_count=0,
-            order=generate_order(self.state.step, 2),
-            error=True,
-            response_id=f"error_response_{generate_id(8)}"
+        # Create error response DTO using new schema
+        error_message_dto = MessageDTO.create_ai_message(
+            message_id=generate_id(MONGODB_OBJECTID_LENGTH),
+            metadata={"error_type": "insertion_failure"}
+        ).update_ai_text_message(
+            text="I apologize, but something went wrong while processing your request. Please try again."
         )
         
         # Return list with user message and error response

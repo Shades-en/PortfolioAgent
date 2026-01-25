@@ -4,14 +4,13 @@ from beanie import Document, Link
 import pymongo
 from bson import ObjectId
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from enum import Enum
-from typing import Self, TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List
 from datetime import datetime, timezone
 
 from opentelemetry.trace import SpanKind
 
-from ai_server.utils.general import get_token_count
 from ai_server.utils.tracing import trace_operation, CustomSpanKinds
 from ai_server.api.exceptions.db_exceptions import (
     MessageRetrievalFailedException,
@@ -19,7 +18,7 @@ from ai_server.api.exceptions.db_exceptions import (
     MessageUpdateFailedException
 )
 from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, MAX_TURNS_TO_FETCH
-from ai_server.types.message import Role, FunctionCallRequest
+from ai_server.types.message import Role, MessageAITextPart, MessageReasoningPart, MessageToolPart, MessageHumanTextPart
 
 if TYPE_CHECKING:
     from ai_server.schemas.session import Session
@@ -31,19 +30,13 @@ class Feedback(Enum):
 
 class Message(Document):
     role: Role
-    response_id: str | None
-    tool_call_id: str | None = None
-    metadata: dict
-    content: str | None
-    function_call: FunctionCallRequest | None
-    token_count: int = 0
+    metadata: dict = Field(default_factory=dict)
+    parts: list[MessageHumanTextPart | MessageAITextPart | MessageReasoningPart | MessageToolPart] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     previous_summary: Link[Summary] | None = None
     turn_number: int = 1
-    error: bool = False
     session: Link[Session]
-    order: int = 0
     feedback: Feedback | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Settings:
         name = "messages"
@@ -52,23 +45,31 @@ class Message(Document):
             [
                 ("session._id", pymongo.ASCENDING), 
                 ("created_at", pymongo.DESCENDING), 
-                ("order", pymongo.ASCENDING)
             ],
             # For turn-based range queries (get_latest_by_session) with role tie-breaker
             [
                 ("session._id", pymongo.ASCENDING),
                 ("turn_number", pymongo.ASCENDING),
                 ("created_at", pymongo.ASCENDING),
-                ("order", pymongo.ASCENDING)
             ]
         ]
     
-    @model_validator(mode="after")
-    def compute_token_count(self) -> Self:
-        """Compute token count from content if not explicitly provided."""
-        if self.token_count == 0 and self.content:
-            self.token_count = get_token_count(self.content)
-        return self
+    @property
+    def token_count(self) -> int:
+        """
+        Get the total token count for this message by summing all part token counts.
+        
+        Returns:
+            The total token count for this message.
+        """
+        total = 0
+        for part in self.parts:
+            if hasattr(part, 'token_count'):
+                total += part.token_count
+            elif hasattr(part, 'input_token_count') and hasattr(part, 'output_token_count'):
+                # For MessageToolPart which has separate input/output counts
+                total += part.input_token_count + part.output_token_count
+        return total
     
     @classmethod
     async def get_paginated_by_session(
@@ -101,7 +102,6 @@ class Message(Document):
                 cls.session._id == ObjectId(session_id)
             ).sort(
                 -cls.created_at,  # Descending to get most recent
-                -cls.order  # Ensure ai messages precede human when timestamps match
             ).skip(skip).limit(page_size).to_list()
             
             # Then reverse to get chronological order (oldest to newest)
@@ -160,7 +160,6 @@ class Message(Document):
                 cls.session._id == ObjectId(session_id)
             ).sort(
                 +cls.created_at,  # Ascending order (oldest first)
-                +cls.order  # Ensure human messages precede ai when timestamps match
             ).to_list()
             
             return messages
@@ -212,17 +211,7 @@ class Message(Document):
                 cls.turn_number >= min_turn_number
             ).sort(
                 +cls.created_at,  # Ascending order (oldest first)
-                +cls.order  # Ensure human messages precede ai when timestamps match
             ).to_list()
-            
-            # Validate: ensure current_turn_number is greater than latest fetched turn
-            if messages:
-                latest_fetched_turn = max(msg.turn_number for msg in messages)
-                if current_turn_number != latest_fetched_turn + 1:
-                    raise MessageRetrievalFailedException(
-                        message="Invalid current_turn_number: must be exactly one greater than latest turn in database",
-                        note=f"session_id={session_id}, current_turn_number={current_turn_number}, latest_fetched_turn={latest_fetched_turn}"
-                    )
             
             return messages
         except MessageRetrievalFailedException:

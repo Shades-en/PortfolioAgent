@@ -33,20 +33,18 @@ async def chat(chat_request: ChatRequest):
     try:
         # Set business context
         async with trace_context(
-            query=chat_request.query,
+            query=chat_request.query_message.query,
             session_id=chat_request.session_id,
             user_id=chat_request.user_id,
             user_cookie=chat_request.user_cookie,
-            turn_number=chat_request.turn_number,
             new_chat=chat_request.new_chat,
             new_user=chat_request.new_user
         ):
             return await ChatService.chat(
-                query=chat_request.query,
+                query_message=chat_request.query_message,
                 session_id=chat_request.session_id,
                 user_id=chat_request.user_id,
                 user_cookie=chat_request.user_cookie,
-                turn_number=chat_request.turn_number,
                 new_chat=chat_request.new_chat,
                 new_user=chat_request.new_user
             )
@@ -69,20 +67,18 @@ async def chat_stream(chat_request: ChatRequest):
     async def run_chat():
         try:
             async with trace_context(
-                query=chat_request.query,
+                query=chat_request.query_message.query,
                 session_id=chat_request.session_id,
                 user_id=chat_request.user_id,
                 user_cookie=chat_request.user_cookie,
-                turn_number=chat_request.turn_number,
                 new_chat=chat_request.new_chat,
                 new_user=chat_request.new_user
             ):
                 result = await ChatService.chat(
-                    query=chat_request.query,
+                    query_message=chat_request.query_message,
                     session_id=chat_request.session_id,
                     user_id=chat_request.user_id,
                     user_cookie=chat_request.user_cookie,
-                    turn_number=chat_request.turn_number,
                     new_chat=chat_request.new_chat,
                     new_user=chat_request.new_user,
                     on_stream_event=stream_callback,

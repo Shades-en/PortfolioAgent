@@ -11,12 +11,13 @@ from ai_server.api.exceptions.db_exceptions import (
     UserNotFoundException,
     MessageRetrievalFailedException,
 )
-from ai_server.types.message import MessageDTO, Role
+from ai_server.api.dto.chat import MessageQuery
+from ai_server.types.message import MessageDTO
 from ai_server.schemas import Summary
 from ai_server.session_manager import SessionManager
 from ai_server.api.exceptions.agent_exceptions import MaxStepsReachedException
 from ai_server.utils.tracing import trace_method
-from ai_server.utils.general import generate_id, generate_order
+from ai_server.utils.general import generate_id
 from ai_server.constants import (
     STREAM_EVENT_START,
     STREAM_EVENT_ERROR,
@@ -60,6 +61,7 @@ class Runner:
         self,
         conversation_history: List[MessageDTO],
         previous_conversation: List[MessageDTO],
+        ai_message: List[MessageDTO],
         summary: Summary | None,
         query: str,
         tool_call: bool,
@@ -103,7 +105,7 @@ class Runner:
             self.llm_provider.generate_response(
                 conversation_history=conversation_history,
                 tools=self.agent.tools,
-                step=self.session_manager.state.step,
+                ai_message=ai_message,
                 stream=stream_enabled,
                 on_stream_event=on_stream_event if stream_enabled else None,
             ),
@@ -127,8 +129,14 @@ class Runner:
         """
         Emit streaming events for a fallback response so the client receives error text in real time.
         """
-        message_id = response_message.response_id or f"fallback_{generate_id(12)}"
-        content = response_message.content or "Something went wrong while processing your request."
+        message_id = response_message.id
+        
+        # Extract text content from message parts
+        content = "Something went wrong while processing your request."
+        for part in response_message.parts:
+            if hasattr(part, 'text'):
+                content = part.text
+                break
 
         await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_START, "messageId": message_id})
         await dispatch_stream_event(
@@ -144,27 +152,24 @@ class Runner:
     )
     async def _handle_query(
         self,
-        query: str,
+        query_message: MessageQuery,
         skip_cache: bool = config.SKIP_CACHE,
         on_stream_event: StreamCallback | None = None,
     ) -> QueryResult:
         turn_completed = False
         tool_call = False
+        query = query_message.query
+        query_id = query_message.id
 
         conversation_history: List[MessageDTO] = []
         previous_conversation: List[MessageDTO] = []
         summary: Summary | None = None
         new_summary: Summary | None = None
-        messages: List[MessageDTO] = []
         chat_name: str | None = None
 
-        user_query_message = MessageDTO(
-            role=Role.HUMAN,
-            metadata={},
-            content=query,
-            function_call=None,
-            order=generate_order(self.session_manager.state.step, 1),
-        )
+        user_query_message = MessageDTO.create_human_message(text=query, message_id=query_id)
+        message_id = generate_id(config.MONGODB_OBJECTID_LENGTH)
+        ai_message = MessageDTO.create_ai_message(message_id=message_id)
 
         try:
             while not turn_completed:
@@ -178,15 +183,15 @@ class Runner:
                     conversation_history.append(user_query_message)
 
                 # Generate LLM response and metadata in parallel
-                (ai_messages, tool_call), (returned_summary, returned_chat_name) = await self._generate_response_and_metadata(
-                    conversation_history=conversation_history,
-                    previous_conversation=previous_conversation,
+                tool_call, (returned_summary, returned_chat_name) = await self._generate_response_and_metadata(
+                    conversation_history=conversation_history, # for LLM response, contains user message and tool call if happened
+                    previous_conversation=previous_conversation, # for summary does not contain recent tool call
+                    ai_message=ai_message,
                     summary=summary,
                     query=query,
-                    tool_call=tool_call,
-                    on_stream_event=on_stream_event,
+                    tool_call=tool_call, # for summary and chat name
+                    on_stream_event=on_stream_event
                 )
-                messages.extend(ai_messages)
                 
                 # Only update summary and chat_name if they are not None (which happens when tool calls override them in second iteration with None values)
                 if returned_summary is not None:
@@ -197,7 +202,7 @@ class Runner:
                 # If tool call is not made then turn is completed. If tool call is made 
                 # then turn will be completed once AI executes the tool call, in the next iteration.
                 if tool_call:
-                    conversation_history.extend(messages)
+                    conversation_history.append(ai_message)
                 else:
                     turn_completed = True
                 
@@ -220,7 +225,7 @@ class Runner:
                     regenerated_summary = True
 
             return QueryResult(
-                messages=[user_query_message, *messages],
+                messages=[user_query_message, ai_message],
                 summary=turn_previous_summary,
                 chat_name=chat_name,
                 fallback=False,
@@ -256,11 +261,11 @@ class Runner:
     )
     async def run(
         self,
-        query: str,
+        query_message: MessageQuery,
         skip_cache = config.SKIP_CACHE,
         on_stream_event: StreamCallback | None = None,
     ) -> dict:
-        result: QueryResult = await self._handle_query(query, skip_cache, on_stream_event)
+        result: QueryResult = await self._handle_query(query_message, skip_cache, on_stream_event)
         messages = await self.session_manager.update_user_session(
             messages=result.messages,
             summary=result.summary,
@@ -282,8 +287,5 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Come up with a plan to streamline the sending of mesesage and showing the streamed response in UI for a new chat as well as the changing of url smoothly 
-# Change entire Message type???? Or Convert from current message type to parts message??
-
-
+# Put A debugger in 179 line in reponses and see. Also check why state of input available is not properly attaching
 # implement search chat feature

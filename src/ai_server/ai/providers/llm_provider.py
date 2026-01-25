@@ -4,9 +4,9 @@ import inspect
 
 from ai_server import config
 from ai_server.schemas.summary import Summary
-from ai_server.types.message import MessageDTO, FunctionCallRequest, Role
+from ai_server.types.message import MessageDTO, Role
 from ai_server.ai.tools.tools import Tool
-from ai_server.config import BASE_MODEL
+from ai_server.config import BASE_MODEL, MONGODB_OBJECTID_LENGTH
 from ai_server.utils.general import generate_id, generate_order
 
 
@@ -48,12 +48,22 @@ class LLMProvider(ABC):
         cls, 
         response: any, 
         tools: List[Tool],
-        step: int,
+        ai_message: MessageDTO,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
-    ) -> List[MessageDTO]:
+    ) -> bool:
         """
         Handle AI response and tool calls. Implemented by subclasses.
+        
+        Args:
+            response: LLM response object
+            tools: Available tools for function calling
+            ai_message: MessageDTO to update with AI response parts
+            stream: Whether streaming is enabled
+            on_stream_event: Callback for streaming events
+            
+        Returns:
+            bool: True if tool calls were made, False otherwise
         
         Note: Tracing is applied to concrete implementations, not abstract methods.
         """
@@ -67,11 +77,24 @@ class LLMProvider(ABC):
         tools: List[Tool] = [],
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL,
+        ai_message: MessageDTO | None = None,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
-    ) -> tuple[List[MessageDTO], bool]:
+    ) -> bool:
         """
         Generate a response from the LLM.
+        
+        Args:
+            conversation_history: List of previous messages
+            tools: Available tools for function calling
+            tool_choice: Tool selection strategy ("auto", "required", "none")
+            model_name: LLM model to use
+            ai_message: MessageDTO to update with AI response (must be provided)
+            stream: Whether streaming is enabled
+            on_stream_event: Callback for streaming events
+            
+        Returns:
+            bool: True if tool calls were made, False otherwise
         
         Note: Tracing is applied to concrete implementations, not abstract methods.
         """
@@ -106,15 +129,35 @@ class LLMProvider(ABC):
         summary: str | None = None,
         metadata: dict | None = None,
     ) -> MessageDTO:
-        """Build a system message with optional summary context."""
-        pass
+        """
+        Build a system message with optional summary context.
+        
+        Args:
+            instructions: Base system prompt (e.g., "You are a helpful assistant.")
+            summary: Optional summary of earlier conversation to include
+            metadata: Optional metadata dict
+            
+        Returns:
+            MessageDTO object with Role.SYSTEM
+        """
+        if summary:
+            content = f"{instructions}\n\n---\nSummary of earlier conversation:\n{summary}"
+        else:
+            content = instructions
+        
+        return MessageDTO.create_system_message(text=content, message_id="system")
 
     @classmethod
-    async def _call_function(cls, function_call_request: FunctionCallRequest, tools: List[Tool]) -> str:
+    async def _call_function(
+        cls, 
+        function_name: str, 
+        function_arguments: dict, 
+        tools: List[Tool]
+    ) -> str:
         """Execute a function call from the tools list."""
         for tool in tools:
-            if tool.name == function_call_request.name:
-                return await tool(tool.Arguments(**function_call_request.arguments))
+            if tool.name == function_name:
+                return await tool(tool.Arguments(**function_arguments))
         return ""
     
     @classmethod
@@ -131,7 +174,7 @@ class LLMProvider(ABC):
             content="This is a mock AI response. The actual LLM call has been bypassed for testing purposes.",
             metadata={"mock": True},
             order=generate_order(step, 2),
-            response_id=f"mock_response_{generate_id(8)}"
+            response_id=f"mock_response_{generate_id(MONGODB_OBJECTID_LENGTH)}"
         )
         
         return [mock_message], False

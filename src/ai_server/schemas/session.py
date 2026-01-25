@@ -24,7 +24,7 @@ from ai_server.api.exceptions.db_exceptions import (
     SessionDeletionFailedException,
     MessageCreationFailedException
 )
-from ai_server.config import DEFAULT_SESSION_NAME, DEFAULT_SESSION_PAGE_SIZE
+from ai_server.config import DEFAULT_SESSION_NAME, DEFAULT_SESSION_PAGE_SIZE, MONGODB_OBJECTID_LENGTH
 from ai_server.utils.tracing import trace_method, trace_operation, CustomSpanKinds
 
 class Session(Document):
@@ -426,18 +426,14 @@ class Session(Document):
             message_docs = []
             for msg_dto in messages:
                 message_doc = Message(
+                    id=ObjectId(msg_dto.id) if len(msg_dto.id) == MONGODB_OBJECTID_LENGTH else ObjectId(),
                     role=msg_dto.role.value,  # Extract string value from enum
-                    tool_call_id=msg_dto.tool_call_id,
+                    parts=msg_dto.parts,
                     metadata=msg_dto.metadata,
-                    content=msg_dto.content,
-                    function_call=msg_dto.function_call,
-                    token_count=msg_dto.token_count,
-                    error=msg_dto.error,
                     turn_number=turn_number,
                     previous_summary=previous_summary,
-                    order=msg_dto.order,
-                    response_id=msg_dto.response_id,
-                    session=self
+                    session=self,
+                    created_at=msg_dto.created_at
                 )
                 message_docs.append(message_doc)
 

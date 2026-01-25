@@ -1,12 +1,20 @@
 from uuid import uuid4
 import os
 import tiktoken
+from bson import ObjectId
 
 # Cached encoder instance
 _tiktoken_encoder: tiktoken.Encoding | None = None
 
 def generate_id(length: int = 8) -> str:
-    """Generate a short UUID with specified length."""
+    """
+    Generate a unique ID with specified length.
+    
+    If length is 24, generates a MongoDB-compatible ObjectId hex string.
+    Otherwise, generates a UUID hex string truncated to the specified length.
+    """
+    if length == 24:
+        return str(ObjectId())
     return uuid4().hex[:length]
 
 def get_env_int(name: str, default: int | None = None) -> int | None:

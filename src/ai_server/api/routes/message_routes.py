@@ -3,7 +3,7 @@ from bson.errors import InvalidId
 
 from ai_server.api.services import MessageService
 from ai_server.api.dto.message import MessageFeedbackRequest, FeedbackType
-from ai_server.schemas.message import Feedback
+from ai_server.schemas import Feedback
 from ai_server.api.exceptions.db_exceptions import MessageUpdateFailedException
 
 router = APIRouter()

@@ -8,11 +8,18 @@ from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
 from ai_server.ai.prompts.chat_name import CHAT_NAME_SYSTEM_PROMPT, CHAT_NAME_USER_PROMPT
 from ai_server.ai.providers.utils import create_tool_output_available_event
 
-from ai_server.utils.general import get_token_count, generate_order
+from ai_server.utils.general import get_token_count
 from ai_server.utils.tracing import trace_method
 
 from ai_server.schemas.summary import Summary
-from ai_server.types.message import MessageDTO, Role
+from ai_server.types.message import (
+    MessageDTO, 
+    MessageHumanTextPart, 
+    MessageAITextPart, 
+    MessageReasoningPart, 
+    MessageToolPart,
+    ToolPartState
+)
 from ai_server.config import (
     BASE_MODEL, 
     MAX_TOKEN_THRESHOLD, 
@@ -98,13 +105,30 @@ class OpenAIProvider(LLMProvider, ABC):
         tools: List[Dict] | None = None,
         tool_choice: str | None = None,
         instructions: str | None = None,
+        stream: bool = False,
+        on_stream_event: StreamCallback | None = None,
     ) -> any:
-        """Generic wrapper for OpenAI API calls. Implemented by subclasses."""
+        """
+        Generic wrapper for OpenAI API calls. Implemented by subclasses.
+        
+        Args:
+            input_messages: List of message dictionaries in OpenAI format
+            model: Model name to use
+            temperature: Temperature for response generation
+            tools: List of tool definitions in OpenAI format
+            tool_choice: Tool selection strategy
+            instructions: System instructions
+            stream: Whether to stream the response
+            on_stream_event: Callback for streaming events
+            
+        Returns:
+            Response object (Response or ChatCompletion depending on implementation)
+        """
         pass
 
     @classmethod
     @abstractmethod
-    def _convert_to_openai_compatible_messages(cls, message: MessageDTO) -> Dict:
+    def _convert_to_openai_compatible_messages(cls, messages: List[MessageDTO]) -> List[Dict]:
         """Convert MessageDTO to OpenAI-compatible format. Implemented by subclasses."""
         pass
 
@@ -117,71 +141,66 @@ class OpenAIProvider(LLMProvider, ABC):
     @classmethod
     async def _process_tool_call_responses(
         cls,
-        function_call_tasks: List,
-        function_call_messages: List[tuple[MessageDTO, str]],
-        response_id: str,
-        step: int,
-        order: int,
+        function_call_tasks: List[tuple[str, any]],
+        ai_message: MessageDTO,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
-    ) -> List[MessageDTO]:
+    ) -> MessageDTO:
         """
         Common method to process tool call responses with error handling.
         
         Args:
-            function_call_tasks: List of async tasks for tool execution
-            function_call_messages: List of (message_ai, call_id) tuples
-            response_id: Response ID for the messages
-            step: Current step number
-            order: Starting order number for messages
+            function_call_tasks: List of (call_id, task) tuples for parallel tool execution
+            ai_message: The AI message that contains the tool calls
             stream: Whether streaming is enabled
             on_stream_event: Callback for streaming events
             
         Returns:
-            List of MessageDTO objects (AI messages + tool response messages)
+            MessageDTO object with tool outputs/errors added to the corresponding tool parts
         """
         
-        messages: List[MessageDTO] = []
-        
         if not function_call_tasks:
-            return messages
+            return ai_message
+        
+        # Unpack call_ids and tasks from tuples
+        call_ids, tasks = zip(*function_call_tasks)
         
         # Execute all function calls in parallel with exception handling
-        function_responses = await asyncio.gather(*function_call_tasks, return_exceptions=True)
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Map responses back to call_ids in a single dict for easy lookup
+        function_responses = dict(zip(call_ids, responses))
+
+        tool_parts = [part for part in ai_message.parts if part.type.startswith("tool-")]
         
         # Create tool messages with the responses
-        for i, (message_ai, call_id) in enumerate(function_call_messages):
-            tool_output = function_responses[i]
-            tool_success = not isinstance(tool_output, Exception)
+        for tool_part in tool_parts:
+            tool_output = function_responses.get(tool_part.toolCallId)
+            tool_success = tool_output is not None and not isinstance(tool_output, Exception)
             
             if tool_success:
                 if hasattr(tool_output, "model_dump"):
                     tool_output_payload = tool_output.model_dump()
+                elif isinstance(tool_output, str):
+                    tool_output_payload = {"result": tool_output}
                 else:
                     tool_output_payload = tool_output
                 if stream:
                     await dispatch_stream_event(
                         on_stream_event,
-                        create_tool_output_available_event(call_id, tool_output_payload),
+                        create_tool_output_available_event(tool_part.toolCallId, tool_output_payload),
                     )
-                content = str(tool_output)
+                ai_message.update_ai_tool_output_message(
+                    tool_call_id=tool_part.toolCallId,
+                    result=tool_output_payload
+                )
             else:
-                content = f"Error: {str(tool_output)}"
-            
-            message_tool = MessageDTO(
-                role=Role.TOOL,
-                tool_call_id=call_id,
-                metadata={
-                    "tool_success": tool_success
-                },
-                content=content,
-                function_call=None,
-                order=generate_order(step, order),
-                response_id=response_id
-            )
-            messages.append(message_tool)
+                ai_message.update_ai_tool_error_message(
+                    tool_call_id=tool_part.toolCallId,
+                    error_text=str(tool_output)
+                )
         
-        return messages
+        return ai_message
 
     @classmethod
     @abstractmethod
@@ -189,11 +208,23 @@ class OpenAIProvider(LLMProvider, ABC):
         cls, 
         response: any, 
         tools: List[Tool],
-        step: int,
+        ai_message: MessageDTO,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
-    ) -> List[MessageDTO]:
-        """Handle AI response and tool calls. Implemented by subclasses."""
+    ) -> bool:
+        """
+        Handle AI response and tool calls. Implemented by subclasses.
+        
+        Args:
+            response: LLM response object
+            tools: Available tools for function calling
+            ai_message: MessageDTO to update with AI response parts
+            stream: Whether streaming is enabled
+            on_stream_event: Callback for streaming events
+            
+        Returns:
+            bool: True if tool calls were made, False otherwise
+        """
         pass
 
     @classmethod
@@ -209,18 +240,17 @@ class OpenAIProvider(LLMProvider, ABC):
         tools: List[Tool] = [],
         tool_choice: str = "auto",
         model_name: str = BASE_MODEL,
-        step: int = 1,
+        ai_message: MessageDTO | None = None,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
-    ) -> tuple[List[MessageDTO], bool]:
+    ) -> bool:
         """
         Generate a response from the LLM.
         
         Traced as LLM span with model name and tool information.
         OpenAI instrumentation will automatically capture tokens, latency, and costs.
         """
-        tool_call = False
-        input_messages = list(map(cls._convert_to_openai_compatible_messages, conversation_history))
+        input_messages = cls._convert_to_openai_compatible_messages(conversation_history)
         response = await cls._call_llm(
             input_messages=input_messages,
             model=model_name,
@@ -229,18 +259,17 @@ class OpenAIProvider(LLMProvider, ABC):
             stream=stream,
             on_stream_event=on_stream_event,
         )
-        ai_messages = await cls._handle_ai_messages_and_tool_calls(
+        
+        last_tool_call = await cls._handle_ai_messages_and_tool_calls(
             response,
             tools,
-            step,
+            ai_message,
             stream,
             on_stream_event,
         )
         if stream:
             await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_FINISH})
-        if ai_messages[-1].role == Role.TOOL:
-            tool_call = True
-        return ai_messages, tool_call
+        return last_tool_call
 
     @classmethod
     async def _summarise(
@@ -257,12 +286,21 @@ class OpenAIProvider(LLMProvider, ABC):
                 "content": f"Previous conversation summary:\n{previous_summary}"
             })
         
-        # Add conversation messages
-        conversation_text = "\n".join([
-            f"{msg.role.value}: {msg.content}" 
-            for msg in conversation_to_summarize 
-            if msg.content
-        ])
+        # Add conversation messages - extract text from parts
+        conversation_lines = []
+        for msg in conversation_to_summarize:
+            for part in msg.parts:
+                if isinstance(part, (MessageHumanTextPart, MessageAITextPart, MessageReasoningPart)):
+                    conversation_lines.append(f"{msg.role.value}: {part.text}")
+                elif isinstance(part, MessageToolPart):
+                    if part.state == ToolPartState.INPUT_AVAILABLE and part.input:
+                        conversation_lines.append(f"{msg.role.value}: [Tool Call: {part.tool_name}({part.input})]")
+                    elif part.state == ToolPartState.OUTPUT_AVAILABLE and part.output:
+                        conversation_lines.append(f"{msg.role.value}: [Tool Result: {part.output}]")
+                    elif part.state == ToolPartState.OUTPUT_ERROR and part.errorText:
+                        conversation_lines.append(f"{msg.role.value}: [Tool Error: {part.errorText}]")
+        
+        conversation_text = "\n".join(conversation_lines)
         summary_input.append({
             "role": "user", 
             "content": f"New conversation to incorporate:\n{conversation_text}\n\nPlease provide an updated summary."
@@ -367,10 +405,21 @@ class OpenAIProvider(LLMProvider, ABC):
         part_tokens: List[int] = []
         total_tokens = 0
         for message in relevant_messages:
-            if not message.content:
-                continue
             role_label = message.role.value.capitalize()
-            snippet = f"{role_label}: {message.content.strip()}"
+            # Extract text from message parts
+            message_texts = []
+            for part in message.parts:
+                if isinstance(part, (MessageHumanTextPart, MessageAITextPart, MessageReasoningPart)):
+                    message_texts.append(part.text)
+                elif isinstance(part, MessageToolPart):
+                    if part.state == ToolPartState.OUTPUT_AVAILABLE and part.output:
+                        message_texts.append(f"[Tool: {part.tool_name}]")
+            
+            if not message_texts:
+                continue
+            
+            content = " ".join(message_texts).strip()
+            snippet = f"{role_label}: {content}"
             tokens = get_token_count(snippet)
             parts.append(snippet)
             part_tokens.append(tokens)
@@ -451,34 +500,3 @@ class OpenAIProvider(LLMProvider, ABC):
             fallback_name = " ".join(words)
             max_length = MAX_CHAT_NAME_LENGTH
             return fallback_name[:max_length] if len(fallback_name) <= max_length else fallback_name[:max_length - 3] + "..."
-
-    @classmethod
-    def build_system_message(
-        cls,
-        instructions: str,
-        summary: str | None = None,
-        metadata: dict | None = None,
-    ) -> MessageDTO:
-        """
-        Build a system message with optional summary context.
-        
-        Args:
-            instructions: Base system prompt (e.g., "You are a helpful assistant.")
-            summary: Optional summary of earlier conversation to include
-            metadata: Optional metadata dict
-            
-        Returns:
-            MessageDTO object with Role.SYSTEM
-        """
-        if summary:
-            content = f"{instructions}\n\n---\nSummary of earlier conversation:\n{summary}"
-        else:
-            content = instructions
-        
-        return MessageDTO(
-            role=Role.SYSTEM,
-            metadata=metadata or {},
-            content=content,
-            function_call=None,
-            order=0
-        )

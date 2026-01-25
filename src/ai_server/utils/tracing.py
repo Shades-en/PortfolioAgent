@@ -35,7 +35,6 @@ def set_trace_context(
     session_id: str | None = None,
     user_id: str | None = None,
     user_cookie: str | None = None,
-    turn_number: int | None = None,
     new_chat: bool = False,
     new_user: bool = False,
 ) -> None:
@@ -50,7 +49,6 @@ def set_trace_context(
         session_id: MongoDB session ID
         user_id: MongoDB user ID
         user_cookie: User's cookie ID
-        turn_number: Current turn number in conversation
         new_chat: Whether this is a new chat session
         new_user: Whether this is a new user
     
@@ -60,7 +58,6 @@ def set_trace_context(
         ...     session_id="507f1f77bcf86cd799439011",
         ...     user_id="507f191e810c19729de860ea",
         ...     user_cookie="abc123",
-        ...     turn_number=3,
         ...     new_chat=False,
         ...     new_user=False
         ... )
@@ -74,7 +71,6 @@ def set_trace_context(
         "session_id": session_id,
         "user_id": user_id,
         "user_cookie": user_cookie,
-        "turn_number": str(turn_number) if turn_number is not None else None,
         "new_chat": new_chat,
         "new_user": new_user,
     })
@@ -114,7 +110,6 @@ async def trace_context(
     session_id: str | None = None,
     user_id: str | None = None,
     user_cookie: str | None = None,
-    turn_number: int | None = None,
     new_chat: bool = False,
     new_user: bool = False,
 ):
@@ -129,7 +124,6 @@ async def trace_context(
         session_id: MongoDB session ID
         user_id: MongoDB user ID
         user_cookie: User's cookie ID
-        turn_number: Current turn number in conversation
         new_chat: Whether this is a new chat session
         new_user: Whether this is a new user
     
@@ -138,7 +132,6 @@ async def trace_context(
         ...     query="What's the weather?",
         ...     session_id="507f1f77bcf86cd799439011",
         ...     user_id="507f191e810c19729de860ea",
-        ...     turn_number=3
         ... ):
         ...     # Context is set here
         ...     result = await runner.run(query)
@@ -158,7 +151,6 @@ async def trace_context(
         session_id=session_id,
         user_id=user_id,
         user_cookie=user_cookie,
-        turn_number=turn_number,
         new_chat=new_chat,
         new_user=new_user
     )

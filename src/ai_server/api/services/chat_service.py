@@ -6,6 +6,7 @@ from ai_server.ai.tools.tools import GetWeather, GetHoroscope
 
 from ai_server.session_manager import SessionManager
 from ai_server.utils.tracing import trace_method
+from ai_server.api.dto.chat import MessageQuery
 
 class ChatService:
     @classmethod
@@ -15,11 +16,10 @@ class ChatService:
     )
     async def chat(
         cls, 
-        query: str, 
+        query_message: MessageQuery, 
         session_id: str | None, 
         user_id: str | None, 
         user_cookie: str | None, 
-        turn_number: int,
         new_chat: bool,
         new_user: bool,
         on_stream_event=None,
@@ -37,7 +37,6 @@ class ChatService:
             user_id=user_id, 
             session_id=session_id,
             user_cookie=user_cookie,
-            turn_number=turn_number, 
             new_chat=new_chat,
             new_user=new_user
         )
@@ -51,4 +50,4 @@ class ChatService:
 
         # Execute query through runner
         runner = Runner(agent=agent, session_manager=session_manager)
-        return await runner.run(query, on_stream_event=on_stream_event)
+        return await runner.run(query_message=query_message, on_stream_event=on_stream_event)
