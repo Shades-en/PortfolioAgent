@@ -287,5 +287,6 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Put A debugger in 179 line in reponses and see. Also check why state of input available is not properly attaching
+# Sending back messages in paginated or normal -> order it such that user messages are first within a turn
+
 # implement search chat feature

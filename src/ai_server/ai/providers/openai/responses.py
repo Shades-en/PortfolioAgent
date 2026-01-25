@@ -177,10 +177,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
                                 "content": part.text,
                             })
                         elif isinstance(part, MessageToolPart):
-                            # Always send function_call if we have input (regardless of state)
-                            if part.toolCallId and part.input and (
-                                part.state == ToolPartState.INPUT_AVAILABLE or part.state == ToolPartState.OUTPUT_AVAILABLE
-                            ):
+                            if part.toolCallId and part.input and part.state == ToolPartState.INPUT_AVAILABLE:
                                 tool_input_message = {
                                     "call_id": part.toolCallId,
                                     "type": "function_call",
@@ -188,14 +185,11 @@ class OpenAIResponsesAPI(OpenAIProvider):
                                     "arguments": json.dumps(part.input),
                                 }
                                 converted_messages.append(tool_input_message)
-                            
-                            # Send function_call_output if we have output and state is OUTPUT_AVAILABLE
                             if part.toolCallId and part.output and part.state == ToolPartState.OUTPUT_AVAILABLE:
-                                output_value = part.output if isinstance(part.output, str) else json.dumps(part.output)
                                 tool_output_message = {
                                     "call_id": part.toolCallId,
                                     "type": "function_call_output",
-                                    "output": output_value,
+                                    "output": part.output,
                                 }
                                 converted_messages.append(tool_output_message)
                 case Role.SYSTEM:
