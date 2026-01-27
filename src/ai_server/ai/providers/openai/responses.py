@@ -177,7 +177,10 @@ class OpenAIResponsesAPI(OpenAIProvider):
                                 "content": part.text,
                             })
                         elif isinstance(part, MessageToolPart):
-                            if part.toolCallId and part.input and part.state == ToolPartState.INPUT_AVAILABLE:
+                            if part.toolCallId and part.input and (
+                                part.state == ToolPartState.INPUT_AVAILABLE or
+                                part.state == ToolPartState.OUTPUT_AVAILABLE
+                            ):
                                 tool_input_message = {
                                     "call_id": part.toolCallId,
                                     "type": "function_call",
@@ -186,10 +189,11 @@ class OpenAIResponsesAPI(OpenAIProvider):
                                 }
                                 converted_messages.append(tool_input_message)
                             if part.toolCallId and part.output and part.state == ToolPartState.OUTPUT_AVAILABLE:
+                                output_value = part.output if isinstance(part.output, str) else json.dumps(part.output)
                                 tool_output_message = {
                                     "call_id": part.toolCallId,
                                     "type": "function_call_output",
-                                    "output": part.output,
+                                    "output": output_value,
                                 }
                                 converted_messages.append(tool_output_message)
                 case Role.SYSTEM:

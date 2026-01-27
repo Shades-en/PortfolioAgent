@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from fastapi.responses import StreamingResponse
 from opentelemetry import trace
 
@@ -19,7 +19,7 @@ import json
 router = APIRouter()
 
 @router.post("/chat", tags=["Chat"])
-async def chat(chat_request: ChatRequest):
+async def chat(chat_request: ChatRequest, response: Response):
     """
     Chat endpoint with request-scoped tracing context and agent graph visualization.
     
@@ -31,6 +31,13 @@ async def chat(chat_request: ChatRequest):
     if span.is_recording():
         add_graph_attributes(span, node_id="chat_orchestrator")
     try:
+        # Set Vercel streaming-compatible headers for the response
+        response.headers["x-vercel-ai-ui-message-stream"] = "v1"
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Connection"] = "keep-alive"
+        response.headers["X-Accel-Buffering"] = "no"
+        response.headers.setdefault("x-vercel-ai-protocol", "data")
+
         # Set business context
         async with trace_context(
             query=chat_request.query_message.query,
@@ -105,7 +112,11 @@ async def chat_stream(chat_request: ChatRequest):
             pop_graph_node()
 
     headers = {
+        "x-vercel-ai-ui-message-stream": "v1",
         "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "x-vercel-ai-protocol": "data",
         STREAM_HEADER_NAME: STREAM_HEADER_VERSION,
     }
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)

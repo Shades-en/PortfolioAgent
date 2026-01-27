@@ -41,12 +41,14 @@ class Message(Document):
     class Settings:
         name = "messages"
         indexes = [
-            # For chronological queries and pagination
+            # For chronological queries and pagination with role ordering
+            # Ascending role ('assistant' < 'user'), reversed in code to get user first
             [
                 ("session._id", pymongo.ASCENDING), 
-                ("created_at", pymongo.DESCENDING), 
+                ("created_at", pymongo.DESCENDING),
+                ("role", pymongo.ASCENDING),  # 'assistant' < 'user' alphabetically
             ],
-            # For turn-based range queries (get_latest_by_session) with role tie-breaker
+            # For turn-based range queries (get_latest_by_session)
             [
                 ("session._id", pymongo.ASCENDING),
                 ("turn_number", pymongo.ASCENDING),
@@ -97,11 +99,13 @@ class Message(Document):
             skip = (page - 1) * page_size
             
             # First, get messages sorted by most recent (descending)
+            # When created_at is the same, user messages come before assistant messages
             # Use cls.session._id for querying Link fields
             messages = await cls.find(
                 cls.session._id == ObjectId(session_id)
             ).sort(
                 -cls.created_at,  # Descending to get most recent
+                +cls.role,  # Ascending: 'assistant' < 'user', reversed later to get user first
             ).skip(skip).limit(page_size).to_list()
             
             # Then reverse to get chronological order (oldest to newest)
@@ -160,6 +164,7 @@ class Message(Document):
                 cls.session._id == ObjectId(session_id)
             ).sort(
                 +cls.created_at,  # Ascending order (oldest first)
+                -cls.role,  # Descending: 'user' > 'assistant' alphabetically, user comes first
             ).to_list()
             
             return messages

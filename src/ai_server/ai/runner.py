@@ -287,6 +287,8 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Sending back messages in paginated or normal -> order it such that user messages are first within a turn
+# Session Id takes from frontend - fallback generate on own
+#    Handle when new chat then it should create new session id if not provided
+#.   If not it should throw error if session id not provided
 
 # implement search chat feature
