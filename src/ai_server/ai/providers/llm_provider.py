@@ -4,10 +4,10 @@ import inspect
 
 from ai_server import config
 from ai_server.schemas.summary import Summary
-from ai_server.types.message import MessageDTO, Role
+from ai_server.types.message import MessageDTO
 from ai_server.ai.tools.tools import Tool
-from ai_server.config import BASE_MODEL
-from ai_server.utils.general import generate_id, generate_order
+from ai_server.config import BASE_MODEL, AISDK_ID_LENGTH
+from ai_server.utils.general import generate_id
 
 
 StreamEvent = dict[str, Any]
@@ -169,12 +169,11 @@ class LLMProvider(ABC):
         Returns:
             Tuple of ([MessageDTO], False) where MessageDTO contains dummy content
         """
-        mock_message = MessageDTO(
-            role=Role.AI,
-            content="This is a mock AI response. The actual LLM call has been bypassed for testing purposes.",
-            metadata={"mock": True},
-            order=generate_order(step, 2),
-            response_id=f"mock_response_{generate_id(16, 'nanoid')}"
+        mock_message = MessageDTO.create_ai_message(
+            message_id=generate_id(AISDK_ID_LENGTH, "nanoid"),
+            metadata={"mock": True}
+        ).update_ai_text_message(
+            text="This is a mock AI response. The actual LLM call has been bypassed for testing purposes."
         )
         
         return [mock_message], False

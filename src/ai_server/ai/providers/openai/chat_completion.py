@@ -134,11 +134,12 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         client: openai.AsyncOpenAI,
         request_kwargs: Dict,
         on_stream_event: StreamCallback | None = None,
+        message_id: str | None = None,
     ) -> ChatCompletion:
         """Stream chat completion chunks and dispatch events."""
         tool_call_buffers: Dict[int, Dict] = {}
         content_started = False
-        message_id = None
+        start_emitted = False
         
         stream = await client.chat.completions.create(**request_kwargs, stream=True)
         
@@ -150,8 +151,8 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
             delta = choice.delta
             
             # Emit start event with message ID from first chunk
-            if message_id is None:
-                message_id = chunk.id
+            if not start_emitted:
+                start_emitted = True
                 await dispatch_stream_event(
                     on_stream_event,
                     create_start_event(message_id),
@@ -249,6 +250,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         instructions: str | None = None,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
+        message_id: str | None = None,
     ) -> ChatCompletion:
         """Generic wrapper for OpenAI Chat Completions API calls."""
         kwargs = {
@@ -265,7 +267,7 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         client = cls._get_client()
         if not stream:
             return await client.chat.completions.create(**kwargs)
-        return await cls._stream_chat_completion(client=client, request_kwargs=kwargs, on_stream_event=on_stream_event)
+        return await cls._stream_chat_completion(client=client, request_kwargs=kwargs, on_stream_event=on_stream_event, message_id=message_id)
 
     @classmethod
     def _convert_tools_to_openai_compatible(cls, tools: List[Tool]) -> List[Dict]:

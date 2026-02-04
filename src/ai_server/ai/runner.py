@@ -18,6 +18,7 @@ from ai_server.session_manager import SessionManager
 from ai_server.api.exceptions.agent_exceptions import MaxStepsReachedException
 from ai_server.utils.tracing import trace_method
 from ai_server.utils.general import generate_id
+from ai_server.config import AISDK_ID_LENGTH
 from ai_server.ai.providers.utils import stream_fallback_response
 
 import asyncio
@@ -140,7 +141,7 @@ class Runner:
         chat_name: str | None = None
 
         user_query_message = MessageDTO.create_human_message(text=query, message_id=query_id)
-        message_id = generate_id(16, "nanoid")
+        message_id = generate_id(AISDK_ID_LENGTH, "nanoid")
         ai_message = MessageDTO.create_ai_message(message_id=message_id)
 
         try:
@@ -262,5 +263,7 @@ class Runner:
         }
 
 # Take care of tool calls
+# Implement proper error handling in python
+
 
 # implement search chat feature

@@ -47,6 +47,9 @@ MOCK_AI_SUMMARY = _env_flag("MOCK_AI_SUMMARY", False)
 # AGENT
 MAX_STEPS = 10
 
+# AI SDK Configuration
+AISDK_ID_LENGTH = 16
+
 # Session Configuration
 DEFAULT_SESSION_NAME = os.getenv("DEFAULT_SESSION_NAME", "New Chat")
 TURNS_BETWEEN_CHAT_NAME = int(os.getenv("TURNS_BETWEEN_CHAT_NAME", 20))

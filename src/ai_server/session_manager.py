@@ -12,6 +12,7 @@ from ai_server.api.exceptions.db_exceptions import (
     UserNotFoundException,
 )
 from ai_server.utils.general import generate_id
+from ai_server.config import AISDK_ID_LENGTH
 from ai_server.utils.tracing import trace_method, track_state_change, CustomSpanKinds
 from ai_server.ai.providers.utils import StreamCallback, stream_fallback_response
 
@@ -213,7 +214,7 @@ class SessionManager():
         """
         # Create error response DTO using new schema
         error_message_dto = MessageDTO.create_ai_message(
-            message_id=generate_id(16, "nanoid"),
+            message_id=generate_id(AISDK_ID_LENGTH, "nanoid"),
             metadata={"error": True}
         ).update_ai_text_message(
             text="I apologize, but something went wrong while processing your request. Please try again."

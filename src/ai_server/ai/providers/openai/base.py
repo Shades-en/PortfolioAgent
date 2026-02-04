@@ -107,6 +107,7 @@ class OpenAIProvider(LLMProvider, ABC):
         instructions: str | None = None,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
+        message_id: str | None = None,
     ) -> any:
         """
         Generic wrapper for OpenAI API calls. Implemented by subclasses.
@@ -120,6 +121,7 @@ class OpenAIProvider(LLMProvider, ABC):
             instructions: System instructions
             stream: Whether to stream the response
             on_stream_event: Callback for streaming events
+            message_id: Pre-generated message ID for streaming events
             
         Returns:
             Response object (Response or ChatCompletion depending on implementation)
@@ -258,6 +260,7 @@ class OpenAIProvider(LLMProvider, ABC):
             tool_choice=tool_choice,
             stream=stream,
             on_stream_event=on_stream_event,
+            message_id=ai_message.id if ai_message else None,
         )
         
         last_tool_call = await cls._handle_ai_messages_and_tool_calls(

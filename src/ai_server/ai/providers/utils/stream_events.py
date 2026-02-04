@@ -10,6 +10,7 @@ The event builders follow the AI SDK stream protocol specification.
 from typing import Dict, Any, Callable, Awaitable
 
 from ai_server.utils.general import generate_id
+from ai_server.config import AISDK_ID_LENGTH
 from ai_server.constants import (
     STREAM_EVENT_START,
     STREAM_EVENT_TEXT_START,
@@ -184,7 +185,7 @@ async def stream_fallback_response(
         response_message: MessageDTO containing the error response
     """
     message_id = response_message.id
-    text_id = f"text-{generate_id(16, 'nanoid')}"
+    text_id = f"text-{generate_id(AISDK_ID_LENGTH, 'nanoid')}"
     
     # Extract text content from message parts
     content = "Something went wrong while processing your request."

@@ -14,6 +14,7 @@ from ai_server.ai.providers.utils import (
     create_error_event,
 )
 from ai_server.ai.tools.tools import Tool
+
 from ai_server.types.message import MessageAITextPart, MessageDTO, MessageToolPart, Role, ToolPartState
 from ai_server.config import BASE_MODEL
 from ai_server.constants import (
@@ -26,7 +27,9 @@ from ai_server.constants import (
     OPENAI_EVENT_FUNCTION_ARGS_DONE,
     OPENAI_EVENT_FAILED,
 )
+
 from ai_server.utils.tracing import trace_method
+
 from ai_server.api.exceptions.openai_exceptions import UnrecognizedMessageTypeException
 from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
@@ -52,6 +55,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
         instructions: str | None = None,
         stream: bool = False,
         on_stream_event: StreamCallback | None = None,
+        message_id: str | None = None,
     ) -> Response:
         """Generic wrapper for OpenAI Responses API calls."""
         kwargs = {
@@ -68,7 +72,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
         client = cls._get_client()
         if not stream:
             return await client.responses.create(**kwargs)
-        return await cls._stream_responses(client=client, request_kwargs=kwargs, on_stream_event=on_stream_event)
+        return await cls._stream_responses(client=client, request_kwargs=kwargs, on_stream_event=on_stream_event, message_id=message_id)
 
     @classmethod
     async def _stream_responses(
@@ -76,6 +80,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
         client: openai.AsyncOpenAI,
         request_kwargs: Dict,
         on_stream_event: StreamCallback | None = None,
+        message_id: str | None = None,
     ) -> Response:
         text_started: set[str] = set()
         reasoning_started: set[str] = set()
@@ -89,11 +94,9 @@ class OpenAIResponsesAPI(OpenAIProvider):
                 
                 match event_type:
                     case _ if event_type == OPENAI_EVENT_RESPONSE_CREATED:
-                        response_obj = getattr(event, "response", None)
-                        response_id = getattr(response_obj, "id", None)
                         await dispatch_stream_event(
                             on_stream_event,
-                            create_start_event(response_id),
+                            create_start_event(message_id),
                         )
                     case _ if event_type == OPENAI_EVENT_TEXT_DELTA:
                         text_id = getattr(event, "item_id", None)
