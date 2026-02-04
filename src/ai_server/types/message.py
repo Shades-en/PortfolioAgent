@@ -1,10 +1,14 @@
 from pydantic import BaseModel, model_validator, Field
 from enum import Enum
-from typing import Self, Literal
+from typing import Self
 from datetime import datetime, timezone
 import re
 
 from ai_server.utils.general import get_token_count
+
+class Feedback(Enum):
+    LIKE = "liked"
+    DISLIKE = "disliked"
 
 class Role(Enum):
     HUMAN = 'user'
@@ -93,11 +97,12 @@ class MessageDTO(BaseModel):
     Used for in-memory message representation in conversation flows.
     Does not include DB-specific fields like session Link.
     """
-    id: str
+    id: str | None = Field(default=None, description="Frontend-generated message ID (e.g., from AI SDK)")
     role: Role
     metadata: dict = Field(default_factory=dict)
     parts: list[MessageHumanTextPart | MessageAITextPart | MessageReasoningPart | MessageToolPart] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    feedback: Feedback | None = None
 
     @classmethod
     def create_system_message(cls, text: str, message_id: str, metadata: dict = None) -> Self:

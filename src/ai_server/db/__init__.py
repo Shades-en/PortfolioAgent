@@ -121,35 +121,3 @@ class MongoDB:
     def is_initialized(cls) -> bool:
         """Check if MongoDB is initialized."""
         return cls._initialized
-
-
-# In actual production environments ->
-# Until the user types and send a message, neither the session will be created not the user.
-# Once the user types and send a message, the session will be created and the user will be created.
-# 3 cases involved here
-#.  A. User sends the message very first time -> Create user and session (Highest Latency)
-#.  B. User sends the message for a second session for the first time -> Create session only (Medium Latency)
-#.  C. User sends a follow up message -> Do nothing (Lowest Latency)
-
-# Solution ->
-# When user sends a new message for the very first time -> (No user or session exists)
-#   A. Store cookie in browser, send cookie to server along with param -> New User and New chat as true
-#   B. No need to retrieve any context as we know it will be empty
-#   C. Let AI Generate and respond to user through SSE
-#   D. Store user and session in database as background process -> A single command enough because its a new user and new session, if it errors out -> The transaction. Rollback. Throw error to user
-
-# When user sends a new message for a second session -> (No session exists)
-#   A. Retrieve cookie from browser, send cookie to server to retrieve paginated sessions along with the user ID on page load.
-#   B. When user send a message from a new session, send the cookie along with param -> New chat as True
-#.  C. Retrieve user from database
-#.  D. No need to retrieve any context as we know it will be empty
-#   E. Let AI Generate and respond to user through SSE
-#   F. Store session in database as background process as belonging to that user, if it errors out -> The transaction. Rollback. Throw error to user
-
-# When user sends a follow up message -> (Session and user both exist)
-#   A. Retrieve cookie from browser, send cookie to server to retrieve paginated sessions along with their respective Ids on first page load
-#   B. When user sends a message from a particular existing session, you already have its session id
-#   C. Retrieve Session from database using session ID (You dont need user id here because mostly everything is designed around session)
-#   D. Retrieve context from database
-#   E. Let AI Generate and respond to user through SSE
-#   Note - C & D can be parallel

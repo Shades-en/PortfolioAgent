@@ -6,13 +6,14 @@ import logging
 from ai_server.types.state import State
 from ai_server.types.message import MessageDTO
 from ai_server.schemas import User, Session, Message, Summary
-from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD, MONGODB_OBJECTID_LENGTH
+from ai_server.config import MAX_TURNS_TO_FETCH, MAX_TOKEN_THRESHOLD
 from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
 )
 from ai_server.utils.general import generate_id
 from ai_server.utils.tracing import trace_method, track_state_change, CustomSpanKinds
+from ai_server.ai.providers.utils import StreamCallback, stream_fallback_response
 
 logger = logging.getLogger(__name__)
 
@@ -127,26 +128,6 @@ class SessionManager():
                 # Track state change in current span
                 track_state_change(key, old_value, value)
 
-    def _convert_messages_to_dtos(self, messages: List[Message]) -> List[MessageDTO]:
-        """
-        Convert Message documents to MessageDTO objects.
-        
-        Args:
-            messages: List of Message documents (already sorted chronologically)
-            
-        Returns:
-            List of MessageDTO objects in chronological order
-        """
-        return [
-            MessageDTO(
-                id=str(msg.id),
-                role=msg.role,
-                parts=msg.parts,
-                metadata=msg.metadata,
-                created_at=msg.created_at
-            )
-            for msg in messages
-        ]
 
     @trace_method(
         kind=CustomSpanKinds.DATABASE.value,
@@ -216,7 +197,7 @@ class SessionManager():
         )
         
         # Convert Message documents to MessageDTOs
-        message_dtos = self._convert_messages_to_dtos(context_messages)
+        message_dtos = Message.to_dtos(context_messages)
         
         return message_dtos, summary
     
@@ -232,8 +213,8 @@ class SessionManager():
         """
         # Create error response DTO using new schema
         error_message_dto = MessageDTO.create_ai_message(
-            message_id=generate_id(MONGODB_OBJECTID_LENGTH),
-            metadata={"error_type": "insertion_failure"}
+            message_id=generate_id(16, "nanoid"),
+            metadata={"error": True}
         ).update_ai_text_message(
             text="I apologize, but something went wrong while processing your request. Please try again."
         )
@@ -252,29 +233,26 @@ class SessionManager():
         messages: List[MessageDTO], 
         summary: Summary | None, 
         chat_name: str | None,
-        regenerated_summary: bool
+        regenerated_summary: bool,
+        on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
         # Track if session existed before this method (for parallel name update logic)
         session_existed = self.session is not None
         
         # Case 1: New user and new session - create both atomically
         if not self.session and not self.user:
-            if chat_name:
-                self.session = await Session.create_with_user(
-                    cookie_id=self.user_cookie, 
-                    session_name=chat_name
-                )
-            else:
-                self.session = await Session.create_with_user(cookie_id=self.user_cookie)
+            self.session = await Session.create_with_user(
+                cookie_id=self.user_cookie,
+                session_id=self.session_id,
+                session_name=chat_name
+            )
         # Case 2: Existing user, new session - create session for existing user
         elif not self.session and self.user:
-            if chat_name:
-                self.session = await Session.create_for_existing_user(
-                    user=self.user, 
-                    session_name=chat_name
-                )
-            else:
-                self.session = await Session.create_for_existing_user(user=self.user)
+            self.session = await Session.create_for_existing_user(
+                user=self.user,
+                session_id=self.session_id,
+                session_name=chat_name
+            )
         
         # Insert messages for the session
         if self.session:
@@ -304,6 +282,10 @@ class SessionManager():
                 # Create fallback messages with error response
                 messages = self.create_fallback_messages(messages[0])
                 
+                # Stream the error response if callback is provided
+                if on_stream_event:
+                    await stream_fallback_response(on_stream_event, messages[-1])
+                
                 await self.session.insert_messages(
                     messages=messages,
                     turn_number=turn_number,
@@ -311,6 +293,3 @@ class SessionManager():
                 )
 
         return messages
-    
-        
-        

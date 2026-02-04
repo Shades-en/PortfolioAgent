@@ -5,7 +5,7 @@ from opentelemetry.trace import SpanKind
 from ai_server import config
 from ai_server.ai.agents.agent import Agent
 from ai_server.ai.providers import get_llm_provider
-from ai_server.ai.providers.llm_provider import StreamCallback, dispatch_stream_event
+from ai_server.ai.providers.llm_provider import StreamCallback
 from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
@@ -18,11 +18,7 @@ from ai_server.session_manager import SessionManager
 from ai_server.api.exceptions.agent_exceptions import MaxStepsReachedException
 from ai_server.utils.tracing import trace_method
 from ai_server.utils.general import generate_id
-from ai_server.constants import (
-    STREAM_EVENT_START,
-    STREAM_EVENT_ERROR,
-    STREAM_EVENT_FINISH,
-)
+from ai_server.ai.providers.utils import stream_fallback_response
 
 import asyncio
 from typing import List
@@ -121,30 +117,6 @@ class Runner:
             ),
         )
 
-    @staticmethod
-    async def _stream_fallback_response(
-        on_stream_event: StreamCallback,
-        response_message: MessageDTO,
-    ) -> None:
-        """
-        Emit streaming events for a fallback response so the client receives error text in real time.
-        """
-        message_id = response_message.id
-        
-        # Extract text content from message parts
-        content = "Something went wrong while processing your request."
-        for part in response_message.parts:
-            if hasattr(part, 'text'):
-                content = part.text
-                break
-
-        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_START, "messageId": message_id})
-        await dispatch_stream_event(
-            on_stream_event,
-            {"type": STREAM_EVENT_ERROR, "errorText": content},
-        )
-        await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_FINISH})
-
     @trace_method(
         kind=OpenInferenceSpanKindValues.CHAIN,
         capture_output=False,
@@ -168,7 +140,7 @@ class Runner:
         chat_name: str | None = None
 
         user_query_message = MessageDTO.create_human_message(text=query, message_id=query_id)
-        message_id = generate_id(config.MONGODB_OBJECTID_LENGTH)
+        message_id = generate_id(16, "nanoid")
         ai_message = MessageDTO.create_ai_message(message_id=message_id)
 
         try:
@@ -237,7 +209,7 @@ class Runner:
             logger.error(f"Error in _handle_query: {e}")
             fallback_messages = self.session_manager.create_fallback_messages(user_query_message)
             if on_stream_event and fallback_messages:
-                await self._stream_fallback_response(on_stream_event, fallback_messages[-1])
+                await stream_fallback_response(on_stream_event, fallback_messages[-1])
             
             # Try to get summary: use existing, fetch from DB, or None
             previous_summary = summary
@@ -266,12 +238,14 @@ class Runner:
         on_stream_event: StreamCallback | None = None,
     ) -> dict:
         result: QueryResult = await self._handle_query(query_message, skip_cache, on_stream_event)
-        messages = await self.session_manager.update_user_session(
+        # Shield update_user_session from task cancellation to ensure DB writes complete
+        messages = await asyncio.shield(self.session_manager.update_user_session(
             messages=result.messages,
             summary=result.summary,
             chat_name=result.chat_name,
-            regenerated_summary=result.regenerated_summary
-        )
+            regenerated_summary=result.regenerated_summary,
+            on_stream_event=on_stream_event,
+        ))
         
         return {
             "messages": [
@@ -287,8 +261,6 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Session Id takes from frontend - fallback generate on own
-#    Handle when new chat then it should create new session id if not provided
-#.   If not it should throw error if session id not provided
+# Take care of tool calls
 
 # implement search chat feature

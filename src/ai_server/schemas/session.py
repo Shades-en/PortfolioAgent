@@ -24,8 +24,9 @@ from ai_server.api.exceptions.db_exceptions import (
     SessionDeletionFailedException,
     MessageCreationFailedException
 )
-from ai_server.config import DEFAULT_SESSION_NAME, DEFAULT_SESSION_PAGE_SIZE, MONGODB_OBJECTID_LENGTH
+from ai_server.config import DEFAULT_SESSION_NAME, DEFAULT_SESSION_PAGE_SIZE
 from ai_server.utils.tracing import trace_method, trace_operation, CustomSpanKinds
+
 
 class Session(Document):
     name: str = Field(default_factory=lambda: DEFAULT_SESSION_NAME)
@@ -62,6 +63,7 @@ class Session(Document):
     async def create_with_user(
         cls,
         cookie_id: str,
+        session_id: str,
         session_name: str = DEFAULT_SESSION_NAME
     ) -> Session:
         """
@@ -69,19 +71,29 @@ class Session(Document):
         
         Args:
             cookie_id: Cookie ID for the new user
+            session_id: MongoDB ObjectId string for the session (required)
             session_name: Name for the session
             
         Returns:
             Created Session document
             
         Raises:
-            SessionCreationFailedException: If transaction fails
+            SessionCreationFailedException: If transaction fails or session_id not provided
         
         Traced as INTERNAL span for database transaction.
         """
         from ai_server.db import MongoDB
 
+        if not session_id:
+            raise SessionCreationFailedException(
+                message="session_id is required to create a session",
+                note="session_id parameter must be provided"
+            )
+
         client = MongoDB.get_client()
+
+        if not session_name:
+            session_name = DEFAULT_SESSION_NAME
         
         async with client.start_session() as session_txn:
             try:
@@ -90,8 +102,9 @@ class Session(Document):
                     new_user = User(cookie_id=cookie_id)
                     await new_user.insert(session=session_txn)
                     
-                    # Create and save session
+                    # Create and save session with provided session_id
                     new_session = cls(
+                        id=ObjectId(session_id),
                         name=session_name,
                         user=new_user,
                         latest_turn_number=0
@@ -104,13 +117,14 @@ class Session(Document):
                 # Transaction will automatically abort on exception
                 raise SessionCreationFailedException(
                     message="Failed to create session with user in transaction",
-                    note=f"cookie_id={cookie_id}, session_name={session_name}, error={str(e)}"
+                    note=f"cookie_id={cookie_id}, session_id={session_id}, session_name={session_name}, error={str(e)}"
                 )
     
     @classmethod
     async def create_for_existing_user(
         cls,
         user: User,
+        session_id: str,
         session_name: str = DEFAULT_SESSION_NAME
     ) -> Session:
         """
@@ -118,22 +132,33 @@ class Session(Document):
         
         Args:
             user: Existing User document (must have an id)
+            session_id: MongoDB ObjectId string for the session (required)
             session_name: Name for the session
             
         Returns:
             Created Session document
             
         Raises:
-            SessionCreationFailedException: If session creation fails or user has no id
+            SessionCreationFailedException: If session creation fails, user has no id, or session_id not provided
         """
         if not user.id:
             raise SessionCreationFailedException(
                 message="Cannot create session for user without id",
                 note="User must be saved to database before creating a session"
             )
+
+        if not session_id:
+            raise SessionCreationFailedException(
+                message="session_id is required to create a session",
+                note="session_id parameter must be provided"
+            )
         
         try:
+            if not session_name:
+                session_name = DEFAULT_SESSION_NAME
+                
             new_session = cls(
+                id=ObjectId(session_id),
                 name=session_name,
                 user=user,
                 latest_turn_number=0
@@ -144,7 +169,7 @@ class Session(Document):
         except Exception as e:
             raise SessionCreationFailedException(
                 message="Failed to create session for existing user",
-                note=f"user_id={user.id}, session_name={session_name}, error={str(e)}"
+                note=f"user_id={user.id}, session_id={session_id}, session_name={session_name}, error={str(e)}"
             )
 
     async def _update_latest_turn_number(self, turn_number: int, session=None) -> None:
@@ -426,24 +451,28 @@ class Session(Document):
             message_docs = []
             for msg_dto in messages:
                 message_doc = Message(
-                    id=ObjectId(msg_dto.id) if len(msg_dto.id) == MONGODB_OBJECTID_LENGTH else ObjectId(),
                     role=msg_dto.role.value,  # Extract string value from enum
                     parts=msg_dto.parts,
                     metadata=msg_dto.metadata,
                     turn_number=turn_number,
                     previous_summary=previous_summary,
                     session=self,
-                    created_at=msg_dto.created_at
+                    created_at=msg_dto.created_at,
+                    client_message_id=msg_dto.id  # Store frontend ID separately, MongoDB auto-generates _id
                 )
                 message_docs.append(message_doc)
 
+            # Insert messages using Beanie with transaction - shield from cancellation
             from ai_server.db import MongoDB
 
-            client = MongoDB.get_client()
-            async with client.start_session() as session_txn:
-                async with await session_txn.start_transaction():
-                    await Message.insert_many(message_docs, session=session_txn)
-                    await self._update_latest_turn_number(turn_number, session=session_txn)
+            async def _do_insert():
+                client = MongoDB.get_client()
+                async with client.start_session() as session_txn:
+                    async with await session_txn.start_transaction():
+                        await Message.insert_many(message_docs, session=session_txn)
+                        await self._update_latest_turn_number(turn_number, session=session_txn)
+            
+            await _do_insert()
             
             return message_docs
             

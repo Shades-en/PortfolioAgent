@@ -71,8 +71,9 @@ class SessionService:
         has_next = page < total_pages
         has_previous = page > 1
         
-        # Use mode='json' to serialize ObjectIds and exclude Link fields
-        results = [msg.model_dump(mode='json', exclude={'session', 'previous_summary'}) for msg in messages]
+        # Convert to MessageDTO and serialize
+        message_dtos = Message.to_dtos(messages)
+        results = [dto.model_dump(mode='json') for dto in message_dtos]
         return {
             "count": len(results),
             "total_count": total_count,
@@ -102,8 +103,9 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         messages = await Message.get_all_by_session(session_id=session_id)
-        # Use mode='json' to serialize ObjectIds and exclude Link fields
-        results = [msg.model_dump(mode='json', exclude={'session', 'previous_summary'}) for msg in messages]
+        # Convert to MessageDTO and serialize
+        message_dtos = Message.to_dtos(messages)
+        results = [dto.model_dump(mode='json') for dto in message_dtos]
         return {
             "count": len(results),
             "results": results

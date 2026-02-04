@@ -6,7 +6,7 @@ from ai_server import config
 from ai_server.schemas.summary import Summary
 from ai_server.types.message import MessageDTO, Role
 from ai_server.ai.tools.tools import Tool
-from ai_server.config import BASE_MODEL, MONGODB_OBJECTID_LENGTH
+from ai_server.config import BASE_MODEL
 from ai_server.utils.general import generate_id, generate_order
 
 
@@ -174,7 +174,7 @@ class LLMProvider(ABC):
             content="This is a mock AI response. The actual LLM call has been bypassed for testing purposes.",
             metadata={"mock": True},
             order=generate_order(step, 2),
-            response_id=f"mock_response_{generate_id(MONGODB_OBJECTID_LENGTH)}"
+            response_id=f"mock_response_{generate_id(16, 'nanoid')}"
         )
         
         return [mock_message], False

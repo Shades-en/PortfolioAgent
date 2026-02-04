@@ -5,7 +5,6 @@ import pymongo
 from bson import ObjectId
 
 from pydantic import Field
-from enum import Enum
 from typing import TYPE_CHECKING, List
 from datetime import datetime, timezone
 
@@ -18,15 +17,11 @@ from ai_server.api.exceptions.db_exceptions import (
     MessageUpdateFailedException
 )
 from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, MAX_TURNS_TO_FETCH
-from ai_server.types.message import Role, MessageAITextPart, MessageReasoningPart, MessageToolPart, MessageHumanTextPart
+from ai_server.types.message import Role, MessageAITextPart, MessageReasoningPart, MessageToolPart, MessageHumanTextPart, Feedback, MessageDTO
 
 if TYPE_CHECKING:
     from ai_server.schemas.session import Session
     from ai_server.schemas.summary import Summary
-
-class Feedback(Enum):
-    LIKE = "liked"
-    DISLIKE = "disliked"
 
 class Message(Document):
     role: Role
@@ -37,6 +32,7 @@ class Message(Document):
     turn_number: int = 1
     session: Link[Session]
     feedback: Feedback | None = None
+    client_message_id: str | None = Field(default=None, description="Frontend-generated message ID (e.g., from AI SDK)")
 
     class Settings:
         name = "messages"
@@ -72,6 +68,35 @@ class Message(Document):
                 # For MessageToolPart which has separate input/output counts
                 total += part.input_token_count + part.output_token_count
         return total
+    
+    def to_dto(self) -> MessageDTO:
+        """
+        Convert this Message document to a MessageDTO object.
+        
+        Returns:
+            MessageDTO object with data from this Message document
+        """
+        return MessageDTO(
+            id=self.client_message_id,
+            role=self.role,
+            parts=self.parts,
+            metadata=self.metadata,
+            created_at=self.created_at,
+            feedback=self.feedback,
+        )
+    
+    @classmethod
+    def to_dtos(cls, messages: List[Message]) -> List[MessageDTO]:
+        """
+        Convert a list of Message documents to MessageDTO objects.
+        
+        Args:
+            messages: List of Message documents
+            
+        Returns:
+            List of MessageDTO objects
+        """
+        return [msg.to_dto() for msg in messages]
     
     @classmethod
     async def get_paginated_by_session(

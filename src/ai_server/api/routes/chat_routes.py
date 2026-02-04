@@ -91,12 +91,15 @@ async def chat_stream(chat_request: ChatRequest):
                     on_stream_event=stream_callback,
                 )
                 await queue.put({"type": STREAM_EVENT_DATA_SESSION, "data": result})
+        except asyncio.CancelledError:
+            # Don't propagate cancellation - shielded operations in runner.py will complete
+            pass
         except Exception as exc:
             await queue.put({"type": STREAM_EVENT_ERROR, "errorText": str(exc)})
         finally:
             await queue.put(None)
 
-    task = asyncio.create_task(run_chat())
+    asyncio.create_task(run_chat())
 
     async def event_generator():
         try:
@@ -108,7 +111,6 @@ async def chat_stream(chat_request: ChatRequest):
                 yield payload
             yield f"data: {STREAM_DONE_SENTINEL}\n\n"
         finally:
-            task.cancel()
             pop_graph_node()
 
     headers = {

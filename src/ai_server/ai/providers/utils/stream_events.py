@@ -7,7 +7,9 @@ it easier to maintain event structures.
 The event builders follow the AI SDK stream protocol specification.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Callable, Awaitable
+
+from ai_server.utils.general import generate_id
 from ai_server.constants import (
     STREAM_EVENT_START,
     STREAM_EVENT_TEXT_START,
@@ -24,13 +26,18 @@ from ai_server.constants import (
     STREAM_EVENT_FINISH,
 )
 
+# Type alias for stream callback
+StreamCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
-def create_start_event(message_id: str) -> Dict[str, Any]:
-    """Create a stream start event."""
-    return {
+def create_start_event(message_id: str, metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Create a stream start event with optional metadata."""
+    event = {
         "type": STREAM_EVENT_START,
         "messageId": message_id,
     }
+    if metadata is not None:
+        event["messageMetadata"] = metadata
+    return event
 
 
 def create_text_start_event(text_id: str) -> Dict[str, Any]:
@@ -141,8 +148,55 @@ def create_error_event(error_text: str) -> Dict[str, Any]:
     }
 
 
-def create_finish_event() -> Dict[str, Any]:
-    """Create a stream finish event."""
-    return {
+def create_finish_event(
+    finish_reason: str | None = None,
+) -> Dict[str, Any]:
+    """Create a stream finish event with optional message metadata and finish reason."""
+    event: Dict[str, Any] = {
         "type": STREAM_EVENT_FINISH,
     }
+    if finish_reason is not None:
+        event["finishReason"] = finish_reason
+    return event
+
+
+async def dispatch_stream_event(
+    callback: StreamCallback | None,
+    event: Dict[str, Any],
+) -> None:
+    """Dispatch a stream event to the callback if provided."""
+    if callback is not None:
+        await callback(event)
+
+
+async def stream_fallback_response(
+    on_stream_event: StreamCallback,
+    response_message: Any,
+) -> None:
+    """
+    Emit streaming events for a fallback/error response.
+    
+    Streams the error text as actual text content using text-start/text-delta/text-end pattern
+    so the AI SDK frontend can properly display and store the message.
+    
+    Args:
+        on_stream_event: Callback to dispatch stream events
+        response_message: MessageDTO containing the error response
+    """
+    message_id = response_message.id
+    text_id = f"text-{generate_id(16, 'nanoid')}"
+    
+    # Extract text content from message parts
+    content = "Something went wrong while processing your request."
+    for part in response_message.parts:
+        if hasattr(part, 'text'):
+            content = part.text
+            break
+
+    # Stream as proper text content AND error event so AI SDK can display, store, and identify as error
+    await dispatch_stream_event(on_stream_event, create_start_event(message_id, metadata={"error": True}))
+    await dispatch_stream_event(on_stream_event, create_text_start_event(text_id))
+    await dispatch_stream_event(on_stream_event, create_text_delta_event(text_id, content))
+    await dispatch_stream_event(on_stream_event, create_text_end_event(text_id))
+    await dispatch_stream_event(on_stream_event, create_error_event(content))
+    await dispatch_stream_event(on_stream_event, create_finish_event(finish_reason="error"))

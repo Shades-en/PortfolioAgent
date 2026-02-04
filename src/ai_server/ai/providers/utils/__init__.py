@@ -14,6 +14,9 @@ from ai_server.ai.providers.utils.stream_events import (
     create_tool_output_available_event,
     create_error_event,
     create_finish_event,
+    StreamCallback,
+    dispatch_stream_event,
+    stream_fallback_response,
 )
 
 __all__ = [
@@ -30,4 +33,7 @@ __all__ = [
     "create_tool_output_available_event",
     "create_error_event",
     "create_finish_event",
+    "StreamCallback",
+    "dispatch_stream_event",
+    "stream_fallback_response",
 ]
