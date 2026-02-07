@@ -265,9 +265,5 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# Take care of tool calls
-    # Make changes in chat completion as well for toolcall issue - adding toolcall name -> right now text message after toolcall is not streaming out
-    # test scenario where one tool errors out - messages in UI should display accordingly and server should also take care
-
 # Implement proper error handling in python
 # implement search chat feature

@@ -23,6 +23,7 @@ from ai_server.constants import (
     STREAM_EVENT_TOOL_INPUT_DELTA,
     STREAM_EVENT_TOOL_INPUT_AVAILABLE,
     STREAM_EVENT_TOOL_OUTPUT_AVAILABLE,
+    STREAM_EVENT_TOOL_OUTPUT_ERROR,
     STREAM_EVENT_ERROR,
     STREAM_EVENT_FINISH,
 )
@@ -142,6 +143,18 @@ def create_tool_output_available_event(
         "type": STREAM_EVENT_TOOL_OUTPUT_AVAILABLE,
         "toolCallId": tool_call_id,
         "output": output_data,
+    }
+
+
+def create_tool_output_error_event(
+    tool_call_id: str,
+    error_text: str,
+) -> Dict[str, Any]:
+    """Create a tool output error event."""
+    return {
+        "type": STREAM_EVENT_TOOL_OUTPUT_ERROR,
+        "toolCallId": tool_call_id,
+        "errorText": error_text,
     }
 
 

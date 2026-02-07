@@ -48,7 +48,8 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                             # Add assistant message with tool call
                             if part.toolCallId and part.input is not None and (
                                 part.state == ToolPartState.INPUT_AVAILABLE or
-                                part.state == ToolPartState.OUTPUT_AVAILABLE
+                                part.state == ToolPartState.OUTPUT_AVAILABLE or
+                                part.state == ToolPartState.OUTPUT_ERROR
                             ):
                                 converted_messages.append({
                                     "role": "assistant",
@@ -67,6 +68,18 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                                     "role": "tool",
                                     "tool_call_id": part.toolCallId,
                                     "content": json.dumps(part.output) if isinstance(part.output, dict) else str(part.output),
+                                })
+                            # Handle tool error state - send error message back to model
+                            elif part.toolCallId and part.errorText and part.state == ToolPartState.OUTPUT_ERROR:
+                                error_content = json.dumps({
+                                    "error": True,
+                                    "error_message": part.errorText,
+                                    "note": "This tool encountered an error. Please inform the user about this issue and do not retry this tool call."
+                                })
+                                converted_messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": part.toolCallId,
+                                    "content": error_content,
                                 })
                 case Role.SYSTEM:
                     for part in message.parts:

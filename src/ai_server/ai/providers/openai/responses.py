@@ -198,7 +198,8 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         elif isinstance(part, MessageToolPart):
                             if part.toolCallId and part.input is not None and (
                                 part.state == ToolPartState.INPUT_AVAILABLE or
-                                part.state == ToolPartState.OUTPUT_AVAILABLE
+                                part.state == ToolPartState.OUTPUT_AVAILABLE or
+                                part.state == ToolPartState.OUTPUT_ERROR
                             ):
                                 tool_input_message = {
                                     "call_id": part.toolCallId,
@@ -215,6 +216,19 @@ class OpenAIResponsesAPI(OpenAIProvider):
                                     "output": output_value,
                                 }
                                 converted_messages.append(tool_output_message)
+                            # Handle tool error state - send error message back to model
+                            elif part.toolCallId and part.errorText and part.state == ToolPartState.OUTPUT_ERROR:
+                                error_output = json.dumps({
+                                    "error": True,
+                                    "error_message": part.errorText,
+                                    "note": "This tool encountered an error. Please inform the user about this issue and do not retry this tool call."
+                                })
+                                tool_error_message = {
+                                    "call_id": part.toolCallId,
+                                    "type": "function_call_output",
+                                    "output": error_output,
+                                }
+                                converted_messages.append(tool_error_message)
                 case Role.SYSTEM:
                     for part in message.parts:
                         converted_messages.append({

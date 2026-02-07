@@ -1,13 +1,14 @@
-from ai_server.ai.providers.llm_provider import (
-    LLMProvider,
-    StreamCallback,
-    dispatch_stream_event,
-)
+from ai_server.ai.providers.llm_provider import LLMProvider
 from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
 from ai_server.ai.prompts.chat_name import CHAT_NAME_SYSTEM_PROMPT, CHAT_NAME_USER_PROMPT
-from ai_server.ai.providers.utils import create_tool_output_available_event, create_finish_event
-
+from ai_server.ai.providers.utils import (
+    create_tool_output_available_event,
+    create_tool_output_error_event,
+    create_finish_event,
+    StreamCallback,
+    dispatch_stream_event,
+)
 from ai_server.utils.general import get_token_count
 from ai_server.utils.tracing import trace_method
 
@@ -194,9 +195,15 @@ class OpenAIProvider(LLMProvider, ABC):
                     result=tool_output_payload
                 )
             else:
+                error_text = str(tool_output)
+                if stream:
+                    await dispatch_stream_event(
+                        on_stream_event,
+                        create_tool_output_error_event(tool_part.toolCallId, error_text),
+                    )
                 ai_message.update_ai_tool_error_message(
                     tool_call_id=tool_part.toolCallId,
-                    error_text=str(tool_output)
+                    error_text=error_text
                 )
         
         return ai_message
@@ -204,7 +211,7 @@ class OpenAIProvider(LLMProvider, ABC):
     @classmethod
     @abstractmethod
     async def _handle_ai_messages_and_tool_calls(
-        cls, 
+        cls,
         response: any, 
         tools: List[Tool],
         ai_message: MessageDTO,
