@@ -2,11 +2,11 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues
 
 from ai_server.ai.runner import Runner
 from ai_server.ai.agents.agent import AboutMeAgent
-from ai_server.ai.tools.tools import GetWeather, GetHoroscope
+from ai_server.ai.tools.tools import GetCompanyName, GetHoroscope
 
 from ai_server.session_manager import SessionManager
 from ai_server.utils.tracing import trace_method
-from ai_server.api.dto.chat import MessageQuery
+from ai_server.api.dto.chat import MessageQuery, ChatRequestOptions
 
 class ChatService:
     @classmethod
@@ -22,6 +22,7 @@ class ChatService:
         user_cookie: str | None, 
         new_chat: bool,
         new_user: bool,
+        options: ChatRequestOptions | None = None,
         on_stream_event=None,
     ) -> dict:
         """
@@ -45,9 +46,9 @@ class ChatService:
         agent = AboutMeAgent(
             description="An agent that can answer questions about itself",
             instructions="You are to answer any question posed to you",
-            tools=[GetWeather(), GetHoroscope()],
+            tools=[GetCompanyName(), GetHoroscope()],
         )
 
         # Execute query through runner
-        runner = Runner(agent=agent, session_manager=session_manager)
+        runner = Runner(agent=agent, session_manager=session_manager, options=options)
         return await runner.run(query_message=query_message, on_stream_event=on_stream_event)

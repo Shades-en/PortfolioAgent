@@ -6,7 +6,7 @@ from ai_server.ai.providers.llm_provider import (
 from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
 from ai_server.ai.prompts.chat_name import CHAT_NAME_SYSTEM_PROMPT, CHAT_NAME_USER_PROMPT
-from ai_server.ai.providers.utils import create_tool_output_available_event
+from ai_server.ai.providers.utils import create_tool_output_available_event, create_finish_event
 
 from ai_server.utils.general import get_token_count
 from ai_server.utils.tracing import trace_method
@@ -29,10 +29,7 @@ from ai_server.config import (
     MAX_CHAT_NAME_LENGTH,
     CHAT_NAME_CONTEXT_MAX_MESSAGES,
 )
-from ai_server.constants import (
-    OPENAI,
-    STREAM_EVENT_FINISH,
-)
+from ai_server.constants import OPENAI
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 import logging
@@ -271,7 +268,8 @@ class OpenAIProvider(LLMProvider, ABC):
             on_stream_event,
         )
         if stream:
-            await dispatch_stream_event(on_stream_event, {"type": STREAM_EVENT_FINISH})
+            finish_reason = "tool-calls" if last_tool_call else "stop"
+            await dispatch_stream_event(on_stream_event, create_finish_event(finish_reason))
         return last_tool_call
 
     @classmethod
@@ -391,6 +389,8 @@ class OpenAIProvider(LLMProvider, ABC):
                     previous_summary,
                     conversation_to_summarize,
                 )
+        if summary or chat_name:
+            logger.info(f"Generated metadata - summary: {summary is not None}, chat_name: {chat_name}")
         return summary, chat_name
     
     @classmethod

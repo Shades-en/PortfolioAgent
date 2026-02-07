@@ -120,13 +120,17 @@ def create_tool_input_delta_event(
 def create_tool_input_available_event(
     tool_call_id: str,
     input_data: Any,
+    tool_name: str | None = None,
 ) -> Dict[str, Any]:
     """Create a tool input available event."""
-    return {
+    event: Dict[str, Any] = {
         "type": STREAM_EVENT_TOOL_INPUT_AVAILABLE,
         "toolCallId": tool_call_id,
         "input": input_data,
     }
+    if tool_name is not None:
+        event["toolName"] = tool_name
+    return event
 
 
 def create_tool_output_available_event(
@@ -157,7 +161,7 @@ def create_finish_event(
         "type": STREAM_EVENT_FINISH,
     }
     if finish_reason is not None:
-        event["finishReason"] = finish_reason
+        event["messageMetadata"] = {"finishReason": finish_reason}
     return event
 
 

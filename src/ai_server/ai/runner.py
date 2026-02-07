@@ -6,6 +6,7 @@ from ai_server import config
 from ai_server.ai.agents.agent import Agent
 from ai_server.ai.providers import get_llm_provider
 from ai_server.ai.providers.llm_provider import StreamCallback
+from ai_server.api.dto.chat import ChatRequestOptions
 from ai_server.api.exceptions.db_exceptions import (
     SessionNotFoundException,
     UserNotFoundException,
@@ -40,12 +41,14 @@ class QueryResult:
     regenerated_summary: bool
 
 class Runner:
-    def __init__(self, agent: Agent, session_manager: SessionManager) -> None:
+    def __init__(self, agent: Agent, session_manager: SessionManager, options: ChatRequestOptions | None = None) -> None:
         self.agent = agent
         self.session_manager = session_manager
         self.skip_cache = config.SKIP_CACHE
+        self.options = options or ChatRequestOptions()
         self.llm_provider = get_llm_provider(
-            provider_name=config.LLM_PROVIDER, 
+            provider_name=config.LLM_PROVIDER,
+            api_type=self.options.api_type,
         )
 
     @trace_method(
@@ -263,7 +266,8 @@ class Runner:
         }
 
 # Take care of tool calls
+    # Make changes in chat completion as well for toolcall issue - adding toolcall name -> right now text message after toolcall is not streaming out
+    # test scenario where one tool errors out - messages in UI should display accordingly and server should also take care
+
 # Implement proper error handling in python
-
-
 # implement search chat feature

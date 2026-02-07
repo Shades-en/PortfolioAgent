@@ -53,7 +53,8 @@ async def chat(chat_request: ChatRequest, response: Response):
                 user_id=chat_request.user_id,
                 user_cookie=chat_request.user_cookie,
                 new_chat=chat_request.new_chat,
-                new_user=chat_request.new_user
+                new_user=chat_request.new_user,
+                options=chat_request.options,
             )
     finally:
         # Pop orchestrator from stack
@@ -88,6 +89,7 @@ async def chat_stream(chat_request: ChatRequest):
                     user_cookie=chat_request.user_cookie,
                     new_chat=chat_request.new_chat,
                     new_user=chat_request.new_user,
+                    options=chat_request.options,
                     on_stream_event=stream_callback,
                 )
                 await queue.put({"type": STREAM_EVENT_DATA_SESSION, "data": result})

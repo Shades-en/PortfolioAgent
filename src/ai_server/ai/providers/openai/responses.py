@@ -24,7 +24,8 @@ from ai_server.constants import (
     OPENAI_EVENT_REASONING_DELTA,
     OPENAI_EVENT_REASONING_DONE,
     OPENAI_EVENT_FUNCTION_ARGS_DELTA,
-    OPENAI_EVENT_FUNCTION_ARGS_DONE,
+    OPENAI_EVENT_OUTPUT_ITEM_ADDED,
+    OPENAI_EVENT_OUTPUT_ITEM_DONE,
     OPENAI_EVENT_FAILED,
 )
 
@@ -35,6 +36,7 @@ from ai_server.api.exceptions.schema_exceptions import MessageParseException
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 
+import asyncio
 import json
 from pydantic import ValidationError
 import openai
@@ -84,13 +86,12 @@ class OpenAIResponsesAPI(OpenAIProvider):
     ) -> Response:
         text_started: set[str] = set()
         reasoning_started: set[str] = set()
-        tool_inputs_started: set[str] = set()
-        call_id = None
+        # Track tool calls: item_id (fc_xxx) -> {call_id, name, started}
+        tool_call_info: dict[str, dict] = {}
         async with client.responses.stream(**request_kwargs) as response_stream:
             async for event in response_stream:
                 event_type = getattr(event, "type", "")
                 event_item = getattr(event, "item", None)
-                call_id = call_id or (getattr(event_item, "call_id", None) if event_item else None)
                 
                 match event_type:
                     case _ if event_type == OPENAI_EVENT_RESPONSE_CREATED:
@@ -98,6 +99,20 @@ class OpenAIResponsesAPI(OpenAIProvider):
                             on_stream_event,
                             create_start_event(message_id),
                         )
+                    case _ if event_type == OPENAI_EVENT_OUTPUT_ITEM_ADDED:
+                        # Extract tool call info when function_call item is added
+                        # Map item.id (fc_xxx) to call_id (call_xxx) and tool name
+                        if event_item and getattr(event_item, "type", None) == "function_call":
+                            item_id = getattr(event_item, "id", None)
+                            item_call_id = getattr(event_item, "call_id", None)
+                            item_tool_name = getattr(event_item, "name", None)
+                            if item_id and item_call_id:
+                                tool_call_info[item_id] = {"call_id": item_call_id, "name": item_tool_name}
+                                # Emit tool-input-start immediately when tool call is added
+                                await dispatch_stream_event(
+                                    on_stream_event,
+                                    create_tool_input_start_event(item_call_id, item_tool_name),
+                                )
                     case _ if event_type == OPENAI_EVENT_TEXT_DELTA:
                         text_id = getattr(event, "item_id", None)
                         if text_id and text_id not in text_started:
@@ -127,26 +142,27 @@ class OpenAIResponsesAPI(OpenAIProvider):
                         if reasoning_id:
                             await dispatch_stream_event(on_stream_event, create_reasoning_end_event(reasoning_id))
                     case _ if event_type == OPENAI_EVENT_FUNCTION_ARGS_DELTA:
-                        call_id = call_id or getattr(event, "item_id", None)
-                        if call_id and call_id not in tool_inputs_started:
-                            tool_inputs_started.add(call_id)
-                            await dispatch_stream_event(
-                                on_stream_event,
-                                create_tool_input_start_event(call_id),
-                            )
-                        if call_id:
+                        # Get item_id (fc_xxx) from the event to look up call_id
+                        current_item_id = getattr(event, "item_id", None)
+                        if current_item_id and current_item_id in tool_call_info:
+                            call_id = tool_call_info[current_item_id]["call_id"]
+                            # Emit tool-input-delta
                             await dispatch_stream_event(
                                 on_stream_event,
                                 create_tool_input_delta_event(call_id, getattr(event, "delta", "")),
                             )
-                    case _ if event_type == OPENAI_EVENT_FUNCTION_ARGS_DONE:
-                        call_id = call_id or getattr(event, "item_id", None)
-                        parsed_args = cls._safe_json_loads(getattr(event, "arguments", None))
-                        if call_id:
-                            await dispatch_stream_event(
-                                on_stream_event,
-                                create_tool_input_available_event(call_id, parsed_args),
-                            )
+                    case _ if event_type == OPENAI_EVENT_OUTPUT_ITEM_DONE:
+                        # Extract tool call info and dispatch tool-input-available
+                        if event_item and getattr(event_item, "type", None) == "function_call":
+                            item_call_id = getattr(event_item, "call_id", None)
+                            item_tool_name = getattr(event_item, "name", None)
+                            item_arguments = getattr(event_item, "arguments", None)
+                            parsed_args = cls._safe_json_loads(item_arguments)
+                            if item_call_id:
+                                await dispatch_stream_event(
+                                    on_stream_event,
+                                    create_tool_input_available_event(item_call_id, parsed_args, item_tool_name),
+                                )
                     case _ if event_type == OPENAI_EVENT_FAILED:
                         error_obj = getattr(event, "error", None)
                         if isinstance(error_obj, dict):
@@ -180,7 +196,7 @@ class OpenAIResponsesAPI(OpenAIProvider):
                                 "content": part.text,
                             })
                         elif isinstance(part, MessageToolPart):
-                            if part.toolCallId and part.input and (
+                            if part.toolCallId and part.input is not None and (
                                 part.state == ToolPartState.INPUT_AVAILABLE or
                                 part.state == ToolPartState.OUTPUT_AVAILABLE
                             ):
@@ -247,12 +263,12 @@ class OpenAIResponsesAPI(OpenAIProvider):
             
             # Execute all function calls in parallel and create tool messages
             if function_call_tasks:
-                await cls._process_tool_call_responses(
+                await asyncio.shield(cls._process_tool_call_responses(
                     function_call_tasks=function_call_tasks,
                     ai_message=ai_message,
                     stream=stream,
                     on_stream_event=on_stream_event,
-                )
+                ))
                 return True
             return False
         except ValidationError as e:

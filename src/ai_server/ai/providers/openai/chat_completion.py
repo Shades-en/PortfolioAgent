@@ -46,7 +46,10 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
                             })
                         elif isinstance(part, MessageToolPart):
                             # Add assistant message with tool call
-                            if part.toolCallId and part.input and part.state == ToolPartState.INPUT_AVAILABLE:
+                            if part.toolCallId and part.input is not None and (
+                                part.state == ToolPartState.INPUT_AVAILABLE or
+                                part.state == ToolPartState.OUTPUT_AVAILABLE
+                            ):
                                 converted_messages.append({
                                     "role": "assistant",
                                     "tool_calls": [{
@@ -140,104 +143,123 @@ class OpenAIChatCompletionAPI(OpenAIProvider):
         tool_call_buffers: Dict[int, Dict] = {}
         content_started = False
         start_emitted = False
+        openai_chunk_id: str | None = None  # Track OpenAI's chunk id for text events
         
-        stream = await client.chat.completions.create(**request_kwargs, stream=True)
-        
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
+        # Use .stream() context manager which provides get_final_completion()
+        async with client.chat.completions.stream(**request_kwargs) as stream:
+            async for event in stream:
+                event_type = getattr(event, "type", "")
                 
-            choice = chunk.choices[0]
-            delta = choice.delta
-            
-            # Emit start event with message ID from first chunk
-            if not start_emitted:
-                start_emitted = True
-                await dispatch_stream_event(
-                    on_stream_event,
-                    create_start_event(message_id),
-                )
-            
-            # Handle content streaming
-            if delta.content:
-                if not content_started:
-                    content_started = True
-                    await dispatch_stream_event(
-                        on_stream_event,
-                        create_text_start_event(message_id),
-                    )
-                await dispatch_stream_event(
-                    on_stream_event,
-                    create_text_delta_event(message_id, delta.content),
-                )
-            
-            # Handle tool calls streaming
-            if delta.tool_calls:
-                for tool_call_delta in delta.tool_calls:
-                    index = tool_call_delta.index
+                # Handle chunk events (raw ChatCompletionChunk)
+                if event_type == "chunk":
+                    chunk = event.chunk
                     
-                    # Initialize buffer for this tool call
-                    if index not in tool_call_buffers:
-                        tool_call_buffers[index] = {
-                            "id": tool_call_delta.id,
-                            "name": None,
-                            "arguments": "",
-                            "started": False,
-                        }
+                    # Capture OpenAI's chunk id (chatcmpl-xxx) for text events
+                    if openai_chunk_id is None and chunk.id:
+                        openai_chunk_id = chunk.id
                     
-                    buffer = tool_call_buffers[index]
+                    if not chunk.choices:
+                        continue
+                        
+                    choice = chunk.choices[0]
+                    delta = choice.delta
                     
-                    # Update buffer with new data
-                    if tool_call_delta.id:
-                        buffer["id"] = tool_call_delta.id
-                    if tool_call_delta.function:
-                        if tool_call_delta.function.name:
-                            buffer["name"] = tool_call_delta.function.name
-                        if tool_call_delta.function.arguments:
-                            buffer["arguments"] += tool_call_delta.function.arguments
-                    
-                    # Emit start event when we have the tool call ID
-                    if buffer["id"] and not buffer["started"]:
-                        buffer["started"] = True
+                    # Emit start event with message ID from first chunk
+                    if not start_emitted:
+                        start_emitted = True
                         await dispatch_stream_event(
                             on_stream_event,
-                            create_tool_input_start_event(buffer["id"], buffer["name"]),
+                            create_start_event(message_id),
                         )
                     
-                    # Emit delta event for arguments
-                    if tool_call_delta.function and tool_call_delta.function.arguments:
-                        await dispatch_stream_event(
-                            on_stream_event,
-                            create_tool_input_delta_event(buffer["id"], tool_call_delta.function.arguments),
-                        )
-            
-            # Handle finish reason
-            if choice.finish_reason:
-                # Emit text end if content was streamed
-                if content_started:
-                    await dispatch_stream_event(
-                        on_stream_event,
-                        create_text_end_event(message_id),
-                    )
-                
-                # Emit tool input available for completed tool calls
-                if choice.finish_reason == "tool_calls":
-                    for buffer in tool_call_buffers.values():
-                        if buffer["id"] and buffer["arguments"]:
-                            try:
-                                parsed_args = json.loads(buffer["arguments"])
-                            except json.JSONDecodeError:
-                                parsed_args = buffer["arguments"]
+                    # Handle tool calls streaming from raw chunks
+                    if delta.tool_calls:
+                        for tool_call_delta in delta.tool_calls:
+                            index = tool_call_delta.index
                             
+                            # Initialize buffer for this tool call
+                            if index not in tool_call_buffers:
+                                tool_call_buffers[index] = {
+                                    "id": tool_call_delta.id,
+                                    "name": None,
+                                    "arguments": "",
+                                    "started": False,
+                                }
+                            
+                            buffer = tool_call_buffers[index]
+                            
+                            # Update buffer with new data
+                            if tool_call_delta.id:
+                                buffer["id"] = tool_call_delta.id
+                            if tool_call_delta.function:
+                                if tool_call_delta.function.name:
+                                    buffer["name"] = tool_call_delta.function.name
+                                if tool_call_delta.function.arguments:
+                                    buffer["arguments"] += tool_call_delta.function.arguments
+                            
+                            # Emit start event when we have the tool call ID
+                            if buffer["id"] and not buffer["started"]:
+                                buffer["started"] = True
+                                await dispatch_stream_event(
+                                    on_stream_event,
+                                    create_tool_input_start_event(buffer["id"], buffer["name"]),
+                                )
+                            
+                            # Emit delta event for arguments
+                            if tool_call_delta.function and tool_call_delta.function.arguments:
+                                await dispatch_stream_event(
+                                    on_stream_event,
+                                    create_tool_input_delta_event(buffer["id"], tool_call_delta.function.arguments),
+                                )
+                    
+                    # Handle finish reason
+                    if choice.finish_reason:
+                        # Emit text end if content was streamed
+                        if content_started:
+                            text_id = openai_chunk_id or message_id
                             await dispatch_stream_event(
                                 on_stream_event,
-                                create_tool_input_available_event(buffer["id"], parsed_args),
+                                create_text_end_event(text_id),
                             )
-        
-        # Get final completion by creating a non-streaming request
-        # (OpenAI's streaming API doesn't provide a get_final_completion equivalent)
-        final_completion = await client.chat.completions.create(**request_kwargs, stream=False)
-        return final_completion
+                        
+                        # Emit tool input available for completed tool calls
+                        if choice.finish_reason == "tool_calls":
+                            for buffer in tool_call_buffers.values():
+                                if buffer["id"]:
+                                    # Handle empty arguments for tools with no parameters
+                                    if buffer["arguments"]:
+                                        try:
+                                            parsed_args = json.loads(buffer["arguments"])
+                                        except json.JSONDecodeError:
+                                            parsed_args = buffer["arguments"]
+                                    else:
+                                        parsed_args = {}
+                                    
+                                    await dispatch_stream_event(
+                                        on_stream_event,
+                                        create_tool_input_available_event(buffer["id"], parsed_args, buffer["name"]),
+                                    )
+                        
+                        # Note: finish event is emitted by base.py after the entire agentic loop completes
+                
+                # Handle content delta events (higher-level API)
+                elif event_type == "content.delta":
+                    # Use OpenAI's chunk id for text events (like Responses API uses item_id)
+                    text_id = openai_chunk_id or message_id
+                    if not content_started:
+                        content_started = True
+                        await dispatch_stream_event(
+                            on_stream_event,
+                            create_text_start_event(text_id),
+                        )
+                    await dispatch_stream_event(
+                        on_stream_event,
+                        create_text_delta_event(text_id, event.delta),
+                    )
+            
+            # Get final completion from stream (like Responses API)
+            final_completion = await stream.get_final_completion()
+            return final_completion
 
     @classmethod
     async def _call_llm(
