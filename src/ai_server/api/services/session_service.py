@@ -12,19 +12,20 @@ from ai_server.utils.tracing import trace_operation
 class SessionService:
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def get_session(cls, session_id: str) -> dict:
+    async def get_session(cls, session_id: str, user_id: str) -> dict:
         """
         Get a session by its ID.
         
         Args:
             session_id: The session ID
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with session data or None if not found
         
         Traced as CHAIN span for service-level orchestration.
         """
-        session = await Session.get_by_id(session_id=session_id)
+        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
         if session is None:
             return None
         # Use mode='json' to serialize ObjectIds and exclude Link fields
@@ -35,6 +36,7 @@ class SessionService:
     async def get_session_messages(
         cls,
         session_id: str,
+        user_id: str,
         page: int = 1,
         page_size: int = DEFAULT_MESSAGE_PAGE_SIZE
     ) -> dict:
@@ -44,6 +46,7 @@ class SessionService:
         
         Args:
             session_id: The session ID
+            user_id: The user's MongoDB document ID for authorization
             page: Page number (1-indexed)
             page_size: Number of messages per page
             
@@ -56,6 +59,20 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
+        # First verify the session belongs to the user
+        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
+        if session is None:
+            return {
+                "count": 0,
+                "total_count": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 0,
+                "has_next": False,
+                "has_previous": False,
+                "results": []
+            }
+        
         # Fetch paginated messages and total count in parallel
         messages, total_count = await asyncio.gather(
             Message.get_paginated_by_session(
@@ -87,12 +104,13 @@ class SessionService:
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def get_all_session_messages(cls, session_id: str) -> dict:
+    async def get_all_session_messages(cls, session_id: str, user_id: str) -> dict:
         """
         Get all messages for a session in chronological order (oldest to newest).
         
         Args:
             session_id: The session ID
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with count and results: {
@@ -102,6 +120,14 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
+        # First verify the session belongs to the user
+        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
+        if session is None:
+            return {
+                "count": 0,
+                "results": []
+            }
+        
         messages = await Message.get_all_by_session(session_id=session_id)
         # Convert to MessageDTO and serialize
         message_dtos = Message.to_dtos(messages)
@@ -216,13 +242,14 @@ class SessionService:
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def update_session_starred(cls, session_id: str, starred: bool) -> dict:
+    async def update_session_starred(cls, session_id: str, starred: bool, user_id: str) -> dict:
         """
         Update the starred status for a session.
         
         Args:
             session_id: The session ID to update
             starred: Whether the session should be starred (True) or unstarred (False)
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with update info: {
@@ -233,17 +260,18 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.update_starred(session_id, starred)
+        return await Session.update_starred(session_id, starred, user_id=user_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def rename_session(cls, session_id: str, name: str) -> dict:
+    async def rename_session(cls, session_id: str, name: str, user_id: str) -> dict:
         """
         Rename a session.
         
         Args:
             session_id: The session ID to rename
             name: New name for the session
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with update info: {
@@ -254,7 +282,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        session = await Session.get_by_id(session_id=session_id)
+        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
+        
         if session is None:
             return {
                 "session_updated": False,
@@ -271,12 +300,13 @@ class SessionService:
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def delete_session(cls, session_id: str) -> dict:
+    async def delete_session(cls, session_id: str, user_id: str) -> dict:
         """
         Delete a session and all its related data (messages, turns, summaries).
         
         Args:
             session_id: The session ID to delete
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with deletion counts: {
@@ -288,7 +318,7 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.delete_with_related(session_id)
+        return await Session.delete_with_related(session_id, user_id=user_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)

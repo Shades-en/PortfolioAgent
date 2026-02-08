@@ -43,14 +43,86 @@ class Session(Document):
         ]
     
     @classmethod
-    async def get_by_id(cls, session_id: str) -> Session | None:
-        """Retrieve a session by its MongoDB document ID."""
+    async def get_by_id(cls, session_id: str, user_id: str) -> Session | None:
+        """
+        Retrieve a session by its MongoDB document ID, filtered by user_id.
+        This ensures users can only access their own sessions.
+        
+        Args:
+            session_id: The session's MongoDB document ID
+            user_id: The user's MongoDB document ID for authorization
+            
+        Returns:
+            Session if found and belongs to user, None otherwise
+            
+        Raises:
+            SessionRetrievalFailedException: If retrieval fails
+        """
         try:
-            return await cls.get(ObjectId(session_id))
+            user_obj_id = ObjectId(user_id)
+            session_obj_id = ObjectId(session_id)
+            
+            # Direct query with user filter - no aggregation needed
+            session = await cls.find_one(
+                cls.id == session_obj_id,
+                cls.user.id == user_obj_id
+            )
+            return session
         except Exception as e:
             raise SessionRetrievalFailedException(
                 message="Failed to retrieve session by ID",
-                note=f"session_id={session_id}, error={str(e)}"
+                note=f"session_id={session_id}, user_id={user_id}, error={str(e)}"
+            )
+    
+    @classmethod
+    async def get_by_id_and_cookie(cls, session_id: str, cookie_id: str) -> Session | None:
+        """
+        Retrieve a session by its MongoDB document ID, filtered by user's cookie_id.
+        This is a fallback method when user_id is not available.
+        
+        Args:
+            session_id: The session's MongoDB document ID
+            cookie_id: The user's cookie ID for authorization
+            
+        Returns:
+            Session if found and belongs to user, None otherwise
+            
+        Raises:
+            SessionRetrievalFailedException: If retrieval fails
+        """
+        try:
+            pipeline = [
+                {
+                    "$match": {
+                        "_id": ObjectId(session_id)
+                    }
+                },
+                {
+                    "$lookup": {
+                        "from": "users",
+                        "localField": "user.$id",
+                        "foreignField": "_id",
+                        "as": "user_data"
+                    }
+                },
+                {
+                    "$unwind": "$user_data"
+                },
+                {
+                    "$match": {
+                        "user_data.cookie_id": cookie_id
+                    }
+                }
+            ]
+            
+            results = await cls.aggregate(pipeline).to_list()
+            if not results:
+                return None
+            return cls.model_validate(results[0])
+        except Exception as e:
+            raise SessionRetrievalFailedException(
+                message="Failed to retrieve session by ID and cookie",
+                note=f"session_id={session_id}, cookie_id={cookie_id}, error={str(e)}"
             )
     
     @classmethod
@@ -232,13 +304,14 @@ class Session(Document):
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
-    async def update_starred(cls, session_id: str, starred: bool) -> dict:
+    async def update_starred(cls, session_id: str, starred: bool, user_id: str) -> dict:
         """
         Update the starred status for a session.
         
         Args:
             session_id: The session ID to update
             starred: Whether the session should be starred (True) or unstarred (False)
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with update info: {
@@ -253,8 +326,8 @@ class Session(Document):
         Traced as INTERNAL span for database operation.
         """
         try:
-            obj_id = ObjectId(session_id)
-            session = await cls.get(obj_id)
+            session = await cls.get_by_id(session_id, user_id)
+            
             if not session:
                 raise SessionUpdateFailedException(
                     message="Session not found",
@@ -344,13 +417,14 @@ class Session(Document):
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
-    async def delete_with_related(cls, session_id: str) -> dict:
+    async def delete_with_related(cls, session_id: str, user_id: str) -> dict:
         """
         Delete session and all related documents (messages, summaries) in a transaction.
         This prevents orphaned documents with dangling references.
         
         Args:
             session_id: MongoDB document ID of the session to delete
+            user_id: The user's MongoDB document ID for authorization
         
         Returns:
             Dictionary with deletion counts: {
@@ -369,8 +443,8 @@ class Session(Document):
         from ai_server.db import MongoDB
         
         try:
-            obj_id = ObjectId(session_id)
-            session = await cls.get(obj_id)
+            session = await cls.get_by_id(session_id, user_id)
+            
             if not session:
                 return {
                     "messages_deleted": 0,
@@ -379,14 +453,15 @@ class Session(Document):
                 }
             
             client = MongoDB.get_client()
+            session_obj_id = session.id  # Get the session's ObjectId
             
             async with client.start_session() as session_txn:
                 async with await session_txn.start_transaction():
                     # Delete session, messages, and summaries in parallel
                     delete_results = await asyncio.gather(
                         session.delete(session=session_txn),
-                        Message.find(Message.session._id == obj_id).delete(session=session_txn),
-                        Summary.find(Summary.session._id == obj_id).delete(session=session_txn)
+                        Message.find(Message.session._id == session_obj_id).delete(session=session_txn),
+                        Summary.find(Summary.session._id == session_obj_id).delete(session=session_txn)
                     )
                     
                     messages_deleted = delete_results[1].deleted_count if delete_results[1] else 0

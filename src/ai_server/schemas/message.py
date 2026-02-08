@@ -253,14 +253,70 @@ class Message(Document):
             )
     
     @classmethod
+    async def get_by_id(cls, message_id: str, user_id: str) -> Message | None:
+        """
+        Retrieve a message by its MongoDB document ID, filtered by user_id.
+        This ensures users can only access messages from their own sessions.
+        
+        Args:
+            message_id: The message's MongoDB document ID
+            user_id: The user's MongoDB document ID for authorization
+            
+        Returns:
+            Message if found and belongs to user's session, None otherwise
+            
+        Raises:
+            MessageRetrievalFailedException: If retrieval fails
+        """
+        try:
+            user_obj_id = ObjectId(user_id)
+            message_obj_id = ObjectId(message_id)
+            
+            # Query message and filter by session's user
+            pipeline = [
+                {
+                    "$match": {
+                        "_id": message_obj_id
+                    }
+                },
+                {
+                    "$lookup": {
+                        "from": "sessions",
+                        "localField": "session.$id",
+                        "foreignField": "_id",
+                        "as": "session_data"
+                    }
+                },
+                {
+                    "$unwind": "$session_data"
+                },
+                {
+                    "$match": {
+                        "session_data.user.$id": user_obj_id
+                    }
+                }
+            ]
+            
+            results = await cls.aggregate(pipeline).to_list()
+            if not results:
+                return None
+            return cls.model_validate(results[0])
+        except Exception as e:
+            raise MessageRetrievalFailedException(
+                message="Failed to retrieve message by ID",
+                note=f"message_id={message_id}, user_id={user_id}, error={str(e)}"
+            )
+    
+    @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
-    async def update_feedback(cls, message_id: str, feedback: Feedback | None) -> dict:
+    async def update_feedback(cls, message_id: str, feedback: Feedback | None, user_id: str) -> dict:
         """
         Update the feedback for a message.
         
         Args:
             message_id: The message ID to update
             feedback: The feedback value (LIKE, DISLIKE, or None for neutral/removal)
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with update info: {
@@ -275,8 +331,8 @@ class Message(Document):
         Traced as INTERNAL span for database operation.
         """
         try:
-            obj_id = ObjectId(message_id)
-            message = await cls.get(obj_id)
+            message = await cls.get_by_id(message_id, user_id)
+            
             if not message:
                 raise MessageUpdateFailedException(
                     message="Message not found",
@@ -302,12 +358,13 @@ class Message(Document):
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
-    async def delete_by_id(cls, message_id: str) -> dict:
+    async def delete_by_id(cls, message_id: str, user_id: str) -> dict:
         """
         Delete a message by its ID.
         
         Args:
             message_id: The message ID to delete
+            user_id: The user's MongoDB document ID for authorization
             
         Returns:
             Dictionary with deletion info: {
@@ -321,8 +378,8 @@ class Message(Document):
         Traced as INTERNAL span for database operation.
         """
         try:
-            obj_id = ObjectId(message_id)
-            message = await cls.get(obj_id)
+            message = await cls.get_by_id(message_id, user_id)
+            
             if not message:
                 return {
                     "message_deleted": False,

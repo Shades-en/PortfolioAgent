@@ -74,13 +74,18 @@ class SessionManager():
                     note=f"user_id={self.user_id}, user_cookie={self.user_cookie}"
                 )
         else:
-            # Existing user, existing chat - fetch session only s
+            # Existing user, existing chat - fetch session only
             if self.session_id:
-                self.session = await Session.get_by_id(self.session_id)
+                if self.user_id:
+                    # Primary: use user_id for direct query
+                    self.session = await Session.get_by_id(self.session_id, self.user_id)
+                elif self.user_cookie:
+                    # Fallback: use cookie_id with aggregation lookup
+                    self.session = await Session.get_by_id_and_cookie(self.session_id, self.user_cookie)
             if not self.session:
                 raise SessionNotFoundException(
                     message=f"Session not found for session_id: {self.session_id}",
-                    note=f"session_id={self.session_id}"
+                    note=f"session_id={self.session_id}, user_id={self.user_id}, user_cookie={self.user_cookie}"
                 )
 
     @trace_method(
