@@ -8,12 +8,12 @@ from ai_server.utils.tracing import trace_operation
 class MessageService:
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def update_message_feedback(cls, message_id: str, feedback: Feedback | None, user_id: str) -> dict:
+    async def update_message_feedback(cls, client_message_id: str, feedback: Feedback | None, user_id: str) -> dict:
         """
         Update the feedback for a message.
         
         Args:
-            message_id: The message ID to update
+            client_message_id: The frontend-generated message ID (from AI SDK)
             feedback: The feedback value (LIKE, DISLIKE, or None for neutral)
             user_id: The user's MongoDB document ID for authorization
             
@@ -26,16 +26,16 @@ class MessageService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Message.update_feedback(message_id, feedback, user_id=user_id)
+        return await Message.update_feedback(client_message_id, feedback, user_id=user_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def delete_message(cls, message_id: str, user_id: str) -> dict:
+    async def delete_message(cls, client_message_id: str, user_id: str) -> dict:
         """
-        Delete a message by its ID.
+        Delete a message by its client ID.
         
         Args:
-            message_id: The message ID to delete
+            client_message_id: The frontend-generated message ID (from AI SDK)
             user_id: The user's MongoDB document ID for authorization
             
         Returns:
@@ -46,4 +46,4 @@ class MessageService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Message.delete_by_id(message_id, user_id=user_id)
+        return await Message.delete_by_id(client_message_id, user_id=user_id)

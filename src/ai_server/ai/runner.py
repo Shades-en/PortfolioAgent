@@ -265,8 +265,6 @@ class Runner:
             "session_id": str(self.session_manager.session.id)
         }
 
-# when session is fetched using session ID it should only be fetched for that user - so user id also required
-
-# Implement proper error handling in python
 # Decouple chat name functionality from agent loop and let frontend call it in parallel calls and render it
 # File upload functionality
+# Implement proper error handling in python

@@ -1,5 +1,4 @@
 from fastapi import APIRouter, HTTPException, Depends
-from bson.errors import InvalidId
 
 from ai_server.api.services import MessageService
 from ai_server.api.dto.message import MessageFeedbackRequest, FeedbackType
@@ -9,9 +8,9 @@ from ai_server.api.exceptions.db_exceptions import MessageUpdateFailedException
 
 router = APIRouter()
 
-@router.patch("/messages/{message_id}/feedback", tags=["Message"])
+@router.patch("/messages/{client_message_id}/feedback", tags=["Message"])
 async def update_message_feedback(
-    message_id: str,
+    client_message_id: str,
     request: MessageFeedbackRequest,
     user_id: str = Depends(get_user_id)
 ) -> dict:
@@ -19,7 +18,7 @@ async def update_message_feedback(
     Update the feedback for a message.
     
     Args:
-        message_id: The message ID to update
+        client_message_id: The frontend-generated message ID (from AI SDK)
         request: The feedback request containing feedback type (liked, disliked, or neutral)
         user_id: User's MongoDB document ID from X-User-Id header
     
@@ -31,7 +30,6 @@ async def update_message_feedback(
     
     Raises:
         HTTPException 401: If X-User-Id header is missing
-        HTTPException 400: If message ID format is invalid
         HTTPException 404: If message not found or doesn't belong to user
         HTTPException 500: If update fails
     """
@@ -46,24 +44,22 @@ async def update_message_feedback(
         else:
             feedback = None
         
-        return await MessageService.update_message_feedback(message_id=message_id, feedback=feedback, user_id=user_id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail=f"Invalid message ID format: {message_id}")
+        return await MessageService.update_message_feedback(client_message_id=client_message_id, feedback=feedback, user_id=user_id)
     except MessageUpdateFailedException as e:
         if "not found" in str(e).lower():
-            raise HTTPException(status_code=404, detail=f"Message not found: {message_id}")
+            raise HTTPException(status_code=404, detail=f"Message not found: {client_message_id}")
         raise HTTPException(status_code=500, detail=f"Failed to update message feedback: {str(e)}")
 
-@router.delete("/messages/{message_id}", tags=["Message"])
+@router.delete("/messages/{client_message_id}", tags=["Message"])
 async def delete_message(
-    message_id: str,
+    client_message_id: str,
     user_id: str = Depends(get_user_id)
 ) -> dict:
     """
-    Delete a message by its ID.
+    Delete a message by its client ID.
     
     Args:
-        message_id: The message ID to delete
+        client_message_id: The frontend-generated message ID (from AI SDK)
         user_id: User's MongoDB document ID from X-User-Id header
     
     Returns:
@@ -74,7 +70,4 @@ async def delete_message(
     Raises:
         HTTPException 401: If X-User-Id header is missing
     """
-    try:
-        return await MessageService.delete_message(message_id=message_id, user_id=user_id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail=f"Invalid message ID format: {message_id}")
+    return await MessageService.delete_message(client_message_id=client_message_id, user_id=user_id)

@@ -253,13 +253,13 @@ class Message(Document):
             )
     
     @classmethod
-    async def get_by_id(cls, message_id: str, user_id: str) -> Message | None:
+    async def get_by_client_id(cls, client_message_id: str, user_id: str) -> Message | None:
         """
-        Retrieve a message by its MongoDB document ID, filtered by user_id.
+        Retrieve a message by its client_message_id (frontend-generated ID), filtered by user_id.
         This ensures users can only access messages from their own sessions.
         
         Args:
-            message_id: The message's MongoDB document ID
+            client_message_id: The frontend-generated message ID (from AI SDK)
             user_id: The user's MongoDB document ID for authorization
             
         Returns:
@@ -270,19 +270,18 @@ class Message(Document):
         """
         try:
             user_obj_id = ObjectId(user_id)
-            message_obj_id = ObjectId(message_id)
             
-            # Query message and filter by session's user
+            # Query message by client_message_id and filter by session's user
             pipeline = [
                 {
                     "$match": {
-                        "_id": message_obj_id
+                        "client_message_id": client_message_id
                     }
                 },
                 {
                     "$lookup": {
                         "from": "sessions",
-                        "localField": "session.$id",
+                        "localField": "session._id",
                         "foreignField": "_id",
                         "as": "session_data"
                     }
@@ -303,18 +302,18 @@ class Message(Document):
             return cls.model_validate(results[0])
         except Exception as e:
             raise MessageRetrievalFailedException(
-                message="Failed to retrieve message by ID",
-                note=f"message_id={message_id}, user_id={user_id}, error={str(e)}"
+                message="Failed to retrieve message by client ID",
+                note=f"client_message_id={client_message_id}, user_id={user_id}, error={str(e)}"
             )
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
-    async def update_feedback(cls, message_id: str, feedback: Feedback | None, user_id: str) -> dict:
+    async def update_feedback(cls, client_message_id: str, feedback: Feedback | None, user_id: str) -> dict:
         """
         Update the feedback for a message.
         
         Args:
-            message_id: The message ID to update
+            client_message_id: The frontend-generated message ID (from AI SDK)
             feedback: The feedback value (LIKE, DISLIKE, or None for neutral/removal)
             user_id: The user's MongoDB document ID for authorization
             
@@ -331,12 +330,12 @@ class Message(Document):
         Traced as INTERNAL span for database operation.
         """
         try:
-            message = await cls.get_by_id(message_id, user_id)
+            message = await cls.get_by_client_id(client_message_id, user_id)
             
             if not message:
                 raise MessageUpdateFailedException(
                     message="Message not found",
-                    note=f"message_id={message_id}"
+                    note=f"client_message_id={client_message_id}"
                 )
             
             message.feedback = feedback
@@ -344,7 +343,7 @@ class Message(Document):
             
             return {
                 "message_updated": True,
-                "message_id": message_id,
+                "message_id": client_message_id,
                 "feedback": feedback.value if feedback else None
             }
                     
@@ -353,17 +352,17 @@ class Message(Document):
         except Exception as e:
             raise MessageUpdateFailedException(
                 message="Failed to update message feedback",
-                note=f"message_id={message_id}, feedback={feedback}, error={str(e)}"
+                note=f"client_message_id={client_message_id}, feedback={feedback}, error={str(e)}"
             )
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=CustomSpanKinds.DATABASE.value)
-    async def delete_by_id(cls, message_id: str, user_id: str) -> dict:
+    async def delete_by_id(cls, client_message_id: str, user_id: str) -> dict:
         """
-        Delete a message by its ID.
+        Delete a message by its client ID.
         
         Args:
-            message_id: The message ID to delete
+            client_message_id: The frontend-generated message ID (from AI SDK)
             user_id: The user's MongoDB document ID for authorization
             
         Returns:
@@ -378,7 +377,7 @@ class Message(Document):
         Traced as INTERNAL span for database operation.
         """
         try:
-            message = await cls.get_by_id(message_id, user_id)
+            message = await cls.get_by_client_id(client_message_id, user_id)
             
             if not message:
                 return {
@@ -398,6 +397,6 @@ class Message(Document):
                     
         except Exception as e:
             raise MessageDeletionFailedException(
-                message="Failed to delete message by ID",
-                note=f"message_id={message_id}, error={str(e)}"
+                message="Failed to delete message by client ID",
+                note=f"client_message_id={client_message_id}, error={str(e)}"
             ) 
