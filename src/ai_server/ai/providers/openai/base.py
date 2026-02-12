@@ -1,3 +1,15 @@
+import asyncio
+import json
+import logging
+import os
+from abc import ABC, abstractmethod
+from typing import List, Dict
+
+import openai
+from openai.types.responses import Response
+from openai.types.chat.chat_completion import ChatCompletion
+from openinference.semconv.trace import OpenInferenceSpanKindValues
+
 from ai_server.ai.providers.llm_provider import LLMProvider
 from ai_server.ai.tools.tools import Tool
 from ai_server.ai.prompts.summary import CONVERSATION_SUMMARY_PROMPT
@@ -24,27 +36,10 @@ from ai_server.types.message import (
 from ai_server.config import (
     BASE_MODEL, 
     MAX_TOKEN_THRESHOLD, 
-    MAX_TURNS_TO_FETCH, 
-    TURNS_BETWEEN_CHAT_NAME, 
-    MAX_CHAT_NAME_WORDS, 
-    MAX_CHAT_NAME_LENGTH,
+    MAX_TURNS_TO_FETCH,
     CHAT_NAME_CONTEXT_MAX_MESSAGES,
 )
 from ai_server.constants import OPENAI
-
-from openinference.semconv.trace import OpenInferenceSpanKindValues
-import logging
-
-import asyncio
-import json
-
-import openai
-from openai.types.responses import Response
-from openai.types.chat.chat_completion import ChatCompletion
-
-import os
-from typing import List, Dict
-from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 
@@ -324,34 +319,29 @@ class OpenAIProvider(LLMProvider, ABC):
     @classmethod
     @trace_method(
         kind=OpenInferenceSpanKindValues.LLM,
-        graph_node_id="llm_generate_summary_or_chat_name",
+        graph_node_id="llm_generate_summary",
         capture_input=False,
         capture_output=False
     )
-    async def generate_summary_or_chat_name(
+    async def generate_summary(
         cls, 
         conversation_to_summarize: List[MessageDTO], 
-        previous_summary: str | None, 
+        previous_summary: Summary | None, 
         query: str, 
         turns_after_last_summary: int,
         context_token_count: int,
         tool_call: bool = False,
         new_chat: bool = False,
         turn_number: int = 1,
-    ) -> tuple[str | None, str | None]:
+    ) -> Summary | None:
         """
-        Generate a summary and/or chat name based on conversation state.
+        Generate a summary based on conversation state.
         
-        Traced as LLM span for summary/chat name generation.
+        Traced as LLM span for summary generation.
         
         Summary generation:
         - Triggered when token threshold or turn limit is exceeded
         - Only for non-tool-call, non-new-chat scenarios
-        
-        Chat name generation:
-        - For new chats: Generate immediately using just the query
-        - For existing chats: Generate every N turns (TURNS_BETWEEN_CHAT_NAME) using query and summary
-        - Never generated during tool calls
         
         Args:
             conversation_to_summarize: Messages to summarize
@@ -359,16 +349,13 @@ class OpenAIProvider(LLMProvider, ABC):
             query: Current user query
             turns_after_last_summary: Number of turns since last summary
             context_token_count: Current context token count
-            tool_call: Whether this is a tool call (skips both summary and chat name)
-            new_chat: Whether this is a new chat (generates chat name immediately)
-            turn_number: Current turn number (for periodic chat name generation)
+            tool_call: Whether this is a tool call (skips summary)
+            new_chat: Whether this is a new chat (skips summary)
+            turn_number: Current turn number
             
         Returns:
-            Tuple of (summary, chat_name) where either can be None
+            Summary object or None
         """
-        summary: str | None = None
-        chat_name: str | None = None
-        
         # Generate summary if threshold exceeded (not for tool calls or new chats)
         if not tool_call and not new_chat:
             query_tokens = get_token_count(query)
@@ -377,28 +364,15 @@ class OpenAIProvider(LLMProvider, ABC):
                 (turns_after_last_summary >= MAX_TURNS_TO_FETCH)
             )
             if should_summarize:
-                summary = await cls._summarise(conversation_to_summarize, previous_summary)
+                summary_content = await cls._summarise(conversation_to_summarize, previous_summary)
                 summary = Summary(
-                    content=summary, 
+                    content=summary_content, 
                     end_turn_number=turn_number-1,
-                    start_turn_number=turn_number-turns_after_last_summary # This should be previous summary end turn number + 1
+                    start_turn_number=turn_number-turns_after_last_summary
                 )
-        
-        # Generate chat name (not during tool calls)
-        if not tool_call:
-            if new_chat:
-                # New chat: generate name from query only
-                chat_name = await cls._generate_chat_name(query)
-            elif turn_number % TURNS_BETWEEN_CHAT_NAME == 0:
-                # Existing chat: generate name periodically with context
-                chat_name = await cls._generate_chat_name(
-                    query,
-                    previous_summary,
-                    conversation_to_summarize,
-                )
-        if summary or chat_name:
-            logger.info(f"Generated metadata - summary: {summary is not None}, chat_name: {chat_name}")
-        return summary, chat_name
+                logger.info(f"Generated summary for turn {turn_number}")
+                return summary
+        return None
     
     @classmethod
     def _build_chat_name_context(
@@ -442,22 +416,34 @@ class OpenAIProvider(LLMProvider, ABC):
         return context
 
     @classmethod
-    async def _generate_chat_name(
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.LLM,
+        graph_node_id="llm_generate_chat_name",
+        capture_input=False,
+        capture_output=False
+    )
+    async def generate_chat_name(
         cls,
         query: str,
-        previous_summary: str | None = None,
+        previous_summary: Summary | None = None,
         conversation_to_summarize: List[MessageDTO] | None = None,
+        max_chat_name_length: int = 50,
+        max_chat_name_words: int = 5,
     ) -> str:
         """
-        Generate a meaningful, concise chat name based on the query and optional previous summary.
+        Generate a meaningful, concise chat name based on the query and optional context.
+        
+        Traced as LLM span for chat name generation.
         
         Args:
             query: The user's query
             previous_summary: Optional previous conversation summary for context
             conversation_to_summarize: Optional recent conversation messages when summary unavailable
+            max_chat_name_length: Maximum length for generated chat names (from frontend)
+            max_chat_name_words: Maximum words for generated chat names (from frontend)
             
         Returns:
-            A concise chat name (respects MAX_CHAT_NAME_LENGTH and MAX_CHAT_NAME_WORDS config)
+            A concise chat name
         """
         context_sections: List[str] = []
         if previous_summary:
@@ -477,7 +463,7 @@ class OpenAIProvider(LLMProvider, ABC):
         user_prompt = CHAT_NAME_USER_PROMPT.format(
             context=context, 
             query=query,
-            max_words=MAX_CHAT_NAME_WORDS
+            max_words=max_chat_name_words
         )
 
         try:
@@ -497,16 +483,13 @@ class OpenAIProvider(LLMProvider, ABC):
             chat_name = cls._extract_text_from_response(response)
             
             # Ensure it's not too long
-            max_length = MAX_CHAT_NAME_LENGTH
-            if len(chat_name) > max_length:
-                chat_name = chat_name[:max_length - 3] + "..."
+            if len(chat_name) > max_chat_name_length:
+                chat_name = chat_name[:max_chat_name_length - 3] + "..."
             
             return chat_name
             
         except Exception:
             # Fallback: use first few words of query
-            max_words = MAX_CHAT_NAME_WORDS
-            words = query.split()[:max_words]
+            words = query.split()[:max_chat_name_words]
             fallback_name = " ".join(words)
-            max_length = MAX_CHAT_NAME_LENGTH
-            return fallback_name[:max_length] if len(fallback_name) <= max_length else fallback_name[:max_length - 3] + "..."
+            return fallback_name[:max_chat_name_length] if len(fallback_name) <= max_chat_name_length else fallback_name[:max_chat_name_length - 3] + "..."

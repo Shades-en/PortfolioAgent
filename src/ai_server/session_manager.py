@@ -238,26 +238,20 @@ class SessionManager():
         self, 
         messages: List[MessageDTO], 
         summary: Summary | None, 
-        chat_name: str | None,
         regenerated_summary: bool,
         on_stream_event: StreamCallback | None = None,
     ) -> List[MessageDTO]:
-        # Track if session existed before this method (for parallel name update logic)
-        session_existed = self.session is not None
-        
         # Case 1: New user and new session - create both atomically
         if not self.session and not self.user:
             self.session = await Session.create_with_user(
                 cookie_id=self.user_cookie,
                 session_id=self.session_id,
-                session_name=chat_name
             )
         # Case 2: Existing user, new session - create session for existing user
         elif not self.session and self.user:
             self.session = await Session.create_for_existing_user(
                 user=self.user,
                 session_id=self.session_id,
-                session_name=chat_name
             )
         
         # Insert messages for the session
@@ -275,9 +269,6 @@ class SessionManager():
                     turn_number=turn_number,
                     previous_summary=summary,
                 )
-
-                if session_existed and chat_name:
-                    await self.session.update_name(chat_name)
                 
             except Exception as e:
                 logger.error(f"Failed to insert messages for session {self.session_id}: {str(e)}")

@@ -36,7 +36,6 @@ class QueryResult:
     """Result of handling a query with messages, summary, and fallback status."""
     messages: List[MessageDTO]
     summary: Summary | None
-    chat_name: str | None
     fallback: bool
     regenerated_summary: bool
 
@@ -66,13 +65,13 @@ class Runner:
         query: str,
         tool_call: bool,
         on_stream_event: StreamCallback | None = None,
-    ) -> tuple[tuple[List[MessageDTO], bool], tuple[Summary | None, str | None]]:
+    ) -> tuple[bool, Summary | None]:
         """
-        Generate LLM response and metadata (summary/chat_name) in parallel.
+        Generate LLM response and summary in parallel.
         
         Runs two LLM operations concurrently:
         1. Generate response (with potential tool calls)
-        2. Generate summary or chat name (based on context)
+        2. Generate summary (based on context)
         
         Args:
             conversation_history: Full conversation including system message and user query
@@ -83,7 +82,7 @@ class Runner:
             on_stream_event: Callback for streaming events
             
         Returns:
-            Tuple of ((messages, tool_call), (new_summary, chat_name))
+            Tuple of (tool_call, new_summary)
         
         Traced as INTERNAL span for parallel LLM operations.
         """
@@ -91,9 +90,8 @@ class Runner:
         if config.MOCK_AI_RESPONSE:
             return await asyncio.gather(
                 self.llm_provider.mock_generate_response(step=self.session_manager.state.step),
-                self.llm_provider.mock_generate_summary_or_chat_name(
+                self.llm_provider.mock_generate_summary(
                     query=query,
-                    new_chat=self.session_manager.state.new_chat,
                     turns_after_last_summary=self.session_manager.state.turns_after_last_summary,
                     turn_number=self.session_manager.state.turn_number
                 ),
@@ -109,7 +107,7 @@ class Runner:
                 stream=stream_enabled,
                 on_stream_event=on_stream_event if stream_enabled else None,
             ),
-            self.llm_provider.generate_summary_or_chat_name(
+            self.llm_provider.generate_summary(
                 conversation_to_summarize=previous_conversation,
                 previous_summary=summary,
                 query=query,
@@ -141,7 +139,6 @@ class Runner:
         previous_conversation: List[MessageDTO] = []
         summary: Summary | None = None
         new_summary: Summary | None = None
-        chat_name: str | None = None
 
         user_query_message = MessageDTO.create_human_message(text=query, message_id=query_id)
         message_id = generate_id(AISDK_ID_LENGTH, "nanoid")
@@ -158,22 +155,20 @@ class Runner:
                     conversation_history = [system_message] + previous_conversation
                     conversation_history.append(user_query_message)
 
-                # Generate LLM response and metadata in parallel
-                tool_call, (returned_summary, returned_chat_name) = await self._generate_response_and_metadata(
+                # Generate LLM response and summary in parallel
+                tool_call, returned_summary = await self._generate_response_and_metadata(
                     conversation_history=conversation_history, # for LLM response, contains user message and tool call if happened
                     previous_conversation=previous_conversation, # for summary does not contain recent tool call
                     ai_message=ai_message,
                     summary=summary,
                     query=query,
-                    tool_call=tool_call, # for summary and chat name
+                    tool_call=tool_call, # for summary
                     on_stream_event=on_stream_event
                 )
                 
-                # Only update summary and chat_name if they are not None (which happens when tool calls override them in second iteration with None values)
+                # Only update summary if not None (which happens when tool calls override in second iteration)
                 if returned_summary is not None:
                     new_summary = returned_summary
-                if returned_chat_name is not None:
-                    chat_name = returned_chat_name
 
                 # If tool call is not made then turn is completed. If tool call is made 
                 # then turn will be completed once AI executes the tool call, in the next iteration.
@@ -203,7 +198,6 @@ class Runner:
             return QueryResult(
                 messages=[user_query_message, ai_message],
                 summary=turn_previous_summary,
-                chat_name=chat_name,
                 fallback=False,
                 regenerated_summary=regenerated_summary
             )
@@ -225,7 +219,6 @@ class Runner:
             return QueryResult(
                 messages=fallback_messages,
                 summary=previous_summary,
-                chat_name=chat_name,
                 fallback=True,
                 regenerated_summary=False
             )
@@ -246,7 +239,6 @@ class Runner:
         messages = await asyncio.shield(self.session_manager.update_user_session(
             messages=result.messages,
             summary=result.summary,
-            chat_name=result.chat_name,
             regenerated_summary=result.regenerated_summary,
             on_stream_event=on_stream_event,
         ))
@@ -261,10 +253,8 @@ class Runner:
                 if result.summary
                 else None
             ),
-            "chat_name": result.chat_name,
             "session_id": str(self.session_manager.session.id)
         }
 
-# Decouple chat name functionality from agent loop and let frontend call it in parallel calls and render it
 # File upload functionality
 # Implement proper error handling in python

@@ -4,9 +4,10 @@ import math
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
-from ai_server.schemas import Session, Message
-from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE
+from ai_server.schemas import Session, Message, Summary
+from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE, LLM_PROVIDER
 from ai_server.utils.tracing import trace_operation
+from ai_server.ai.providers import get_llm_provider
 
 
 class SessionService:
@@ -339,3 +340,96 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         return await Session.delete_all_by_user_id(user_id=user_id)
+    
+    @classmethod
+    @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
+    async def generate_chat_name(
+        cls,
+        query: str,
+        turns_between_chat_name: int,
+        max_chat_name_length: int,
+        max_chat_name_words: int,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict:
+        """
+        Generate a chat name for a session.
+        
+        For new chats (no session_id): Generates name from query only.
+        For existing sessions: Fetches context (summary + recent messages) and generates name.
+        
+        Args:
+            query: The user's query for context
+            turns_between_chat_name: Number of turns between chat name regeneration (from frontend)
+            max_chat_name_length: Maximum length for generated chat names (from frontend)
+            max_chat_name_words: Maximum words for generated chat names (from frontend)
+            session_id: Optional session ID (if generating for existing session)
+            user_id: The user's MongoDB document ID for authorization
+            
+        Returns:
+            Dictionary with generated name: {
+                "name": str,
+                "session_id": str | None
+            }
+        
+        Traced as CHAIN span for service-level orchestration.
+        """
+        llm_provider = get_llm_provider(provider_name=LLM_PROVIDER)
+        
+        # For new chats - generate from query only
+        if not session_id:
+            chat_name = await llm_provider.generate_chat_name(
+                query=query,
+                max_chat_name_length=max_chat_name_length,
+                max_chat_name_words=max_chat_name_words,
+            )
+            return {
+                "name": chat_name,
+                "session_id": None
+            }
+        
+        # For existing sessions - fetch context first
+        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
+        if session is None:
+            # Session not found - generate from query only as fallback
+            chat_name = await llm_provider.generate_chat_name(
+                query=query,
+                max_chat_name_length=max_chat_name_length,
+                max_chat_name_words=max_chat_name_words,
+            )
+            return {
+                "name": chat_name,
+                "session_id": session_id
+            }
+        
+        # Calculate context size: 2 * turns_between_chat_name
+        chat_name_context_max_messages = 2 * turns_between_chat_name
+        
+        # Fetch summary and recent messages in parallel
+        summary_task = Summary.get_latest_by_session(session_id=session_id)
+        messages_task = Message.get_paginated_by_session(
+            session_id=session_id,
+            page=1,
+            page_size=chat_name_context_max_messages,
+        )
+        summary, messages = await asyncio.gather(summary_task, messages_task)
+        
+        # Convert messages to MessageDTO format
+        conversation_to_summarize = Message.to_dtos(messages) if messages else None
+        
+        # Generate chat name with context
+        chat_name = await llm_provider.generate_chat_name(
+            query=query,
+            previous_summary=summary,
+            conversation_to_summarize=conversation_to_summarize,
+            max_chat_name_length=max_chat_name_length,
+            max_chat_name_words=max_chat_name_words,
+        )
+        
+        # Save the generated chat name to the session
+        await session.update_name(chat_name)
+        
+        return {
+            "name": chat_name,
+            "session_id": session_id
+        }

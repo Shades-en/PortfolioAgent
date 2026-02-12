@@ -102,21 +102,47 @@ class LLMProvider(ABC):
 
     @classmethod
     @abstractmethod
-    async def generate_summary_or_chat_name(
+    async def generate_summary(
         cls, 
         conversation_to_summarize: List[MessageDTO], 
-        previous_summary: str | None, 
+        previous_summary: Summary | None, 
         query: str, 
         turns_after_last_summary: int,
         context_token_count: int,
         tool_call: bool = False,
         new_chat: bool = False,
         turn_number: int = 1,
-    ) -> tuple[str | None, str | None]:
+    ) -> Summary | None:
         """
-        Generate a summary and/or chat name based on conversation state.
-        Returns tuple of (summary, chat_name) where either can be None.
+        Generate a summary based on conversation state.
         
+        Note: Tracing is applied to concrete implementations, not abstract methods.
+        """
+        pass
+
+    @classmethod
+    @abstractmethod
+    async def generate_chat_name(
+        cls,
+        query: str,
+        previous_summary: Summary | None = None,
+        conversation_to_summarize: List[MessageDTO] | None = None,
+        max_chat_name_length: int = 50,
+        max_chat_name_words: int = 5,
+    ) -> str:
+        """
+        Generate a meaningful, concise chat name based on the query and optional context.
+        
+        Args:
+            query: The user's query
+            previous_summary: Optional previous conversation summary for context
+            conversation_to_summarize: Optional recent conversation messages when summary unavailable
+            max_chat_name_length: Maximum length for generated chat names (from frontend)
+            max_chat_name_words: Maximum words for generated chat names (from frontend)
+            
+        Returns:
+            A concise chat name
+            
         Note: Tracing is applied to concrete implementations, not abstract methods.
         """
         pass
@@ -179,50 +205,48 @@ class LLMProvider(ABC):
         return [mock_message], False
     
     @classmethod
-    async def mock_generate_summary_or_chat_name(
+    async def mock_generate_summary(
         cls,
         query: str,
-        previous_summary: str | None = None,
-        conversation_to_summarize: List[MessageDTO] | None = None,
-        new_chat: bool = False,
         turns_after_last_summary: int = 0,
         turn_number: int = 1,
-    ) -> tuple[str | None, str | None]:
+    ) -> Summary | None:
         """
-        Mock implementation of generate_summary_or_chat_name for testing purposes.
-        Returns dummy summary and chat name without making actual LLM calls.
+        Mock implementation of generate_summary for testing purposes.
+        Returns dummy summary without making actual LLM calls.
         
-        Args:
-            previous_summary: Summary text available before this turn
-            conversation_to_summarize: Recent conversation messages when no summary exists
-            new_chat: Whether this is a new chat (used to determine chat name generation)
-            query: Current user query (used in mock chat name)
-            
         Returns:
-            Tuple of (summary, chat_name) where:
-            - summary: Mock summary string
-            - chat_name: Mock chat name or None (generated for new chats)
+            Mock Summary object or None
         """
-        # Generate mock summary
         if config.MOCK_AI_SUMMARY:
             mock_summary = "Mock summary: This is a test summary of the conversation without actual LLM processing."
-            mock_summary = Summary(
+            return Summary(
                 content=mock_summary,
                 end_turn_number=turn_number-1,
-                start_turn_number=turn_number-turns_after_last_summary # This should be previous summary end turn number + 1
+                start_turn_number=turn_number-turns_after_last_summary
             )
-        else:
-            mock_summary = None
-        # Generate mock chat name for new chats
-        mock_chat_name = None
-        if new_chat or config.MOCK_AI_CHAT_NAME:
-            # Use first few words of query for chat name
-            context_hint = ""
-            if previous_summary:
-                context_hint = " (summary context)"
-            elif conversation_to_summarize:
-                context_hint = " (recent convo)"
-            query_words = query.split()[:3]
-            mock_chat_name = f"Mock Chat{context_hint}: {' '.join(query_words)}"
+        return None
+
+    @classmethod
+    async def mock_generate_chat_name(
+        cls,
+        query: str,
+        previous_summary: Summary | None = None,
+        conversation_to_summarize: List[MessageDTO] | None = None,
+        max_chat_name_length: int = 50,
+        max_chat_name_words: int = 5,
+    ) -> str:
+        """
+        Mock implementation of generate_chat_name for testing purposes.
+        Returns dummy chat name without making actual LLM calls.
         
-        return mock_summary, mock_chat_name
+        Returns:
+            Mock chat name string
+        """
+        context_hint = ""
+        if previous_summary:
+            context_hint = " (summary context)"
+        elif conversation_to_summarize:
+            context_hint = " (recent convo)"
+        query_words = query.split()[:max_chat_name_words]
+        return f"Mock Chat{context_hint}: {' '.join(query_words)}"
