@@ -18,3 +18,8 @@ class ChatRequest(BaseModel):
     new_chat: bool = Field(default=False, description="Whether a new chat should be started")
     new_user: bool = Field(default=False, description="Whether a new user has started the chat")
     options: ChatRequestOptions = Field(default_factory=ChatRequestOptions, description="Request options including API type selection")
+
+
+class CancelChatRequest(BaseModel):
+    """Request to cancel an in-progress chat stream."""
+    session_id: str = Field(..., description="The session id of the chat to cancel")

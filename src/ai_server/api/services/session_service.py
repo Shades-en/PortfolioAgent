@@ -426,9 +426,6 @@ class SessionService:
             max_chat_name_words=max_chat_name_words,
         )
         
-        # Save the generated chat name to the session
-        await session.update_name(chat_name)
-        
         return {
             "name": chat_name,
             "session_id": session_id

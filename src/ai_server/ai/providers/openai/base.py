@@ -61,7 +61,14 @@ class OpenAIProvider(LLMProvider, ABC):
     def _get_client(cls) -> openai.AsyncOpenAI:
         """Get or create the async OpenAI client."""
         if cls.async_client is None:
-            cls.async_client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            kwargs = {}
+            api_key = os.environ.get("OPENAI_API_KEY")
+            base_url = os.environ.get("OPENAI_BASE_URL")
+            if api_key:
+                kwargs["api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = base_url
+            cls.async_client = openai.AsyncOpenAI(**kwargs)
         return cls.async_client
     
     @classmethod
@@ -260,6 +267,7 @@ class OpenAIProvider(LLMProvider, ABC):
             stream=stream,
             on_stream_event=on_stream_event,
             message_id=ai_message.id if ai_message else None,
+            ai_message=ai_message,
         )
         
         last_tool_call = await cls._handle_ai_messages_and_tool_calls(
@@ -269,9 +277,8 @@ class OpenAIProvider(LLMProvider, ABC):
             stream,
             on_stream_event,
         )
-        if stream:
-            finish_reason = "tool-calls" if last_tool_call else "stop"
-            await dispatch_stream_event(on_stream_event, create_finish_event(finish_reason))
+        if stream and last_tool_call:
+            await dispatch_stream_event(on_stream_event, create_finish_event("tool-calls"))
         return last_tool_call
 
     @classmethod

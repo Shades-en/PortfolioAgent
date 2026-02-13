@@ -20,7 +20,7 @@ from ai_server.api.exceptions.agent_exceptions import MaxStepsReachedException
 from ai_server.utils.tracing import trace_method
 from ai_server.utils.general import generate_id
 from ai_server.config import AISDK_ID_LENGTH
-from ai_server.ai.providers.utils import stream_fallback_response
+from ai_server.ai.providers.utils import stream_fallback_response, dispatch_stream_event, create_finish_event
 
 import asyncio
 from typing import List
@@ -201,6 +201,17 @@ class Runner:
                 fallback=False,
                 regenerated_summary=regenerated_summary
             )
+        except asyncio.CancelledError:
+            # User cancelled the stream - save partial content that was accumulated
+            logger.info("Query cancelled by user, saving partial content")
+            # ai_message already contains partial content accumulated during streaming
+            # Return it so it can be saved to DB
+            return QueryResult(
+                messages=[user_query_message, ai_message],
+                summary=summary,  # Use existing summary, don't wait for new one
+                fallback=False,
+                regenerated_summary=False
+            )
         except (SessionNotFoundException, UserNotFoundException, MessageRetrievalFailedException) as e:
             raise e
         except Exception as e:
@@ -243,6 +254,9 @@ class Runner:
             on_stream_event=on_stream_event,
         ))
         
+        # Send finish event after DB writes complete
+        await dispatch_stream_event(on_stream_event, create_finish_event("stop"))
+        
         return {
             "messages": [
                 msg.model_dump(mode='json', exclude={"session", "previous_summary"})
@@ -258,3 +272,4 @@ class Runner:
 
 # File upload functionality
 # Implement proper error handling in python
+# Should we create session and user before running agent loop? Because if i make it a framework then it should be able to handle it

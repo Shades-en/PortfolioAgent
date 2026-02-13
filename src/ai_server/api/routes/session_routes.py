@@ -4,7 +4,7 @@ from bson.errors import InvalidId
 from ai_server.api.services import SessionService
 from ai_server.api.dto.session import SessionStarredRequest, SessionRenameRequest, GenerateChatNameRequest
 from ai_server.api.exceptions.db_exceptions import SessionUpdateFailedException
-from ai_server.api.dependencies import get_user_id
+from ai_server.api.dependencies import get_user_id, get_optional_user_id
 from ai_server.config import (
     DEFAULT_MESSAGE_PAGE_SIZE,
     MAX_MESSAGE_PAGE_SIZE,
@@ -280,77 +280,44 @@ async def delete_all_user_sessions(
 
 
 @router.post("/sessions/generate-name", tags=["Session"])
-async def generate_chat_name_for_new_chat(
+async def generate_chat_name(
     request: GenerateChatNameRequest,
+    user_id: str | None = Depends(get_optional_user_id)
 ) -> dict:
     """
-    Generate a chat name for a new chat (no session yet).
+    Generate a chat name based on query and/or session context.
+    
+    - If session_id is provided: Uses session context (summary + recent messages) + query
+    - If no session_id: Uses only the query (required in this case)
     
     Args:
-        request: Request containing the user's query and chat name configuration
+        request: Request containing query, optional session_id, and chat name configuration
+        user_id: Optional user ID from X-User-Id header (required if session_id is provided)
     
     Returns:
         Dictionary with generated name:
         - name: The generated chat name
-        - session_id: null (no session yet)
+        - session_id: The session ID or null
     
     Raises:
-        HTTPException 400: If query is missing
-        HTTPException 500: If generation fails
-    """
-    if not request.query:
-        raise HTTPException(status_code=400, detail="Query is required for generating chat name")
-    
-    try:
-        return await SessionService.generate_chat_name(
-            query=request.query,
-            turns_between_chat_name=request.turns_between_chat_name,
-            max_chat_name_length=request.max_chat_name_length,
-            max_chat_name_words=request.max_chat_name_words,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate chat name: {str(e)}")
-
-
-@router.post("/sessions/{session_id}/generate-name", tags=["Session"])
-async def generate_chat_name_for_session(
-    session_id: str,
-    request: GenerateChatNameRequest,
-    user_id: str = Depends(get_user_id)
-) -> dict:
-    """
-    Generate a chat name for an existing session.
-    
-    Uses session context (summary + recent messages) along with the query
-    to generate a meaningful chat name.
-    
-    Args:
-        session_id: The session ID to generate name for
-        request: Request containing optional query and chat name configuration
-        user_id: User's MongoDB document ID from X-User-Id header
-    
-    Returns:
-        Dictionary with generated name:
-        - name: The generated chat name
-        - session_id: The session ID
-    
-    Raises:
-        HTTPException 401: If X-User-Id header is missing
+        HTTPException 400: If query is missing when no session_id provided
         HTTPException 400: If session ID format is invalid
         HTTPException 500: If generation fails
     """
+    # Validate: query is required if no session_id
+    if not request.session_id and not request.query:
+        raise HTTPException(status_code=400, detail="Query is required when no session_id is provided")
+    
     try:
-        # Use query if provided, otherwise use empty string (will use session context)
-        query = request.query or ""
         return await SessionService.generate_chat_name(
-            query=query,
+            query=request.query or "",
             turns_between_chat_name=request.turns_between_chat_name,
             max_chat_name_length=request.max_chat_name_length,
             max_chat_name_words=request.max_chat_name_words,
-            session_id=session_id,
+            session_id=request.session_id,
             user_id=user_id
         )
     except InvalidId:
-        raise HTTPException(status_code=400, detail=f"Invalid session ID format: {session_id}")
+        raise HTTPException(status_code=400, detail=f"Invalid session ID format: {request.session_id}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate chat name: {str(e)}")

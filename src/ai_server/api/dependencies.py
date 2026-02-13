@@ -27,3 +27,16 @@ async def get_user_id(
             detail="Missing or empty X-User-Id header"
         )
     return x_user_id.strip()
+
+
+async def get_optional_user_id(
+    x_user_id: str | None = Header(None, description="User's MongoDB document ID (optional)")
+) -> str | None:
+    """
+    FastAPI dependency to extract optional X-User-Id header.
+    
+    Returns None if header is missing or empty, otherwise returns the user_id.
+    """
+    if not x_user_id or not x_user_id.strip():
+        return None
+    return x_user_id.strip()

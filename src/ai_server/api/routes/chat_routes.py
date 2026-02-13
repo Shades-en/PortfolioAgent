@@ -2,9 +2,10 @@ from fastapi import APIRouter, Response
 from fastapi.responses import StreamingResponse
 from opentelemetry import trace
 
-from ai_server.api.dto.chat import ChatRequest
+from ai_server.api.dto.chat import ChatRequest, CancelChatRequest
 from ai_server.api.services import ChatService
 from ai_server.utils.tracing import trace_context, add_graph_attributes, pop_graph_node
+from ai_server.utils.task_registry import register_task, unregister_task, cancel_task
 from ai_server.constants import (
     STREAM_EVENT_DATA_SESSION,
     STREAM_EVENT_ERROR,
@@ -68,6 +69,7 @@ async def chat_stream(chat_request: ChatRequest):
         add_graph_attributes(span, node_id="chat_orchestrator")
 
     queue: asyncio.Queue = asyncio.Queue()
+    session_id = chat_request.session_id
 
     async def stream_callback(event):
         await queue.put(event)
@@ -95,13 +97,16 @@ async def chat_stream(chat_request: ChatRequest):
                 await queue.put({"type": STREAM_EVENT_DATA_SESSION, "data": result})
         except asyncio.CancelledError:
             # Don't propagate cancellation - shielded operations in runner.py will complete
-            pass
+            # The partial content is already saved via asyncio.shield in runner.py
+            await queue.put({"type": "cancelled", "message": "Stream cancelled by user"})
         except Exception as exc:
             await queue.put({"type": STREAM_EVENT_ERROR, "errorText": str(exc)})
         finally:
             await queue.put(None)
+            unregister_task(session_id)
 
-    asyncio.create_task(run_chat())
+    task = asyncio.create_task(run_chat())
+    register_task(session_id, task)
 
     async def event_generator():
         try:
@@ -124,3 +129,19 @@ async def chat_stream(chat_request: ChatRequest):
         STREAM_HEADER_NAME: STREAM_HEADER_VERSION,
     }
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
+
+
+@router.post("/chat/cancel", tags=["Chat"])
+async def cancel_chat(request: CancelChatRequest):
+    """
+    Cancel an in-progress chat stream.
+    
+    Args:
+        request: Contains session_id of the chat to cancel
+    
+    Returns:
+        Dictionary with cancellation status:
+        - cancelled: True if task was found and cancelled, False otherwise
+    """
+    cancelled = cancel_task(request.session_id)
+    return {"cancelled": cancelled}

@@ -7,3 +7,5 @@ venv
 .temp/
 .tmp/
 .vscode/settings.json
+
+.windsurf/plans
