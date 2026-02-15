@@ -15,7 +15,7 @@ from opentelemetry.trace import SpanKind
 
 import json
 
-from ai_server.utils.tracing import CustomSpanKinds
+from ai_server.constants import SERVER
 
 
 class GenericTracingMiddleware(BaseHTTPMiddleware):
@@ -48,7 +48,7 @@ class GenericTracingMiddleware(BaseHTTPMiddleware):
         ) as span:
             try:
                 # Custom span category (for filtering/grouping)
-                span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, CustomSpanKinds.SERVER.value)
+                span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, SERVER)
                 
                 # HTTP attributes
                 span.set_attribute("http.method", request.method)

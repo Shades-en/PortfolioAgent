@@ -7,14 +7,11 @@ from dotenv import load_dotenv
 import os
 
 from arize.otel import register
-from openinference.instrumentation.openai import OpenAIInstrumentor
-from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
-from opentelemetry.instrumentation.redis import RedisInstrumentor
-from openinference.instrumentation.langchain import LangChainInstrumentor
+from omniagent import instrument, setup_logging
 
 from ai_server import (
     AppException, router, lifespan, GenericTracingMiddleware,
-    setup_logging, BASE_PATH, HOST, PORT, RELOAD, WORKERS,
+    BASE_PATH, HOST, PORT, RELOAD, WORKERS,
     CORS_ALLOW_ORIGINS, CORS_ALLOW_CREDENTIALS, CORS_ALLOW_METHODS, CORS_ALLOW_HEADERS
 )
 
@@ -22,7 +19,7 @@ load_dotenv()
 
 setup_logging(level="INFO")
 
-# Initialize tracing only if Arize credentials are configured
+# Initialize tracing - tracer provider owned by ai_server
 ENABLE_TRACING = os.getenv("ENABLE_TRACING", "true").lower() == "true"
 ARIZE_SPACE_ID = os.getenv("ARIZE_SPACE_ID")
 ARIZE_API_KEY = os.getenv("ARIZE_API_KEY")
@@ -33,11 +30,8 @@ if ENABLE_TRACING and ARIZE_SPACE_ID and ARIZE_API_KEY:
         api_key=ARIZE_API_KEY,
         project_name=os.getenv("ARIZE_PROJECT_NAME", "Portfolio AI Server"),
     )
-    
-    OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
-    PymongoInstrumentor().instrument(tracer_provider=tracer_provider)
-    RedisInstrumentor().instrument(tracer_provider=tracer_provider)
-    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+    # Instrument omniagent libraries (OpenAI, Pymongo, Redis, LangChain)
+    instrument(tracer_provider)
 else:
     print("⚠️  Tracing disabled - Set ENABLE_TRACING=true and configure Arize credentials to enable")
 

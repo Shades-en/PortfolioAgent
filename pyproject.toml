@@ -10,24 +10,22 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "arize-otel>=0.10.0",
-    "beanie[srv]>=2.0.1",
     "dotenv>=0.9.9",
     "fastapi>=0.116.1",
-    "httpx>=0.28.1",
-    "langchain>=0.3.27",
-    "langchain-openai>=0.3.29",
-    "openai>=1.99.1",
-    "openinference-instrumentation-langchain>=0.1.56",
-    "openinference-instrumentation-openai>=0.1.39",
-    "opentelemetry-exporter-otlp>=1.37.0",
-    "opentelemetry-instrumentation-pymongo>=0.58b0",
-    "opentelemetry-instrumentation-redis>=0.58b0",
-    "pylint>=3.3.8",
-    "redis>=6.3.0",
-    "redisvl>=0.8.0",
-    "tiktoken>=0.11.0",
     "uvicorn>=0.35.0",
+    # For local development, install omniagent with: uv pip install -e ../OmniAgent
+    # For production, uncomment and specify the published package version:
+    # "omniagent>=0.1.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pylint>=3.3.8"
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_server"]
