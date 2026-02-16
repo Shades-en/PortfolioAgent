@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from pydantic import Field
+from beanie import Link as _BeanieLink
 
 from omniagent.schemas.mongo.message import Message as BaseMessage
 from omniagent.exceptions import MessageUpdateError
 
 from ai_server.types import Feedback
+
+# Re-export Link so Pydantic can resolve forward references inherited from BaseMessage
+Link = _BeanieLink
 
 
 class CustomMessage(BaseMessage):

@@ -1,46 +1,48 @@
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Depends
 
 from ai_server.api.services import UserService
+from ai_server.api.dependencies import get_cookie_id
 
 router = APIRouter()
 
 @router.get("/users", tags=["User"])
 async def get_user(
-    user_id: str | None = Query(default=None, description="User ID"),
-    cookie_id: str | None = Query(default=None, description="Cookie ID")
+    cookie_id: str = Depends(get_cookie_id)
 ) -> dict:
     """
-    Get a user by their ID or cookie ID.
-    At least one of user_id or cookie_id must be provided.
+    Get a user by their cookie ID.
+    
+    Args:
+        cookie_id: Cookie ID of the user
+    
+    Returns:
+        Dictionary with user data
+    
+    Raises:
+        HTTPException 404: If user not found
     """
-    try:
-        user = await UserService.get_user(user_id=user_id, cookie_id=cookie_id)
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Use mode='json' to properly serialize ObjectId and datetime fields
-        data = user.model_dump(mode="json")
-        if "client_id" in data:
-            data["cookie_id"] = data.pop("client_id")
-        return data
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    user = await UserService.get_user(cookie_id=cookie_id)
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Use mode='json' to properly serialize ObjectId and datetime fields
+    data = user.model_dump(mode="json")
+    if "client_id" in data:
+        data["cookie_id"] = data.pop("client_id")
+    return data
 
 @router.delete("/users", tags=["User"])
 async def delete_user(
-    user_id: str | None = Query(default=None, description="User ID"),
-    cookie_id: str | None = Query(default=None, description="Cookie ID"),
+    cookie_id: str = Depends(get_cookie_id),
     cascade: bool = Query(default=True, description="If true, also delete all sessions and related data")
 ) -> dict:
     """
-    Delete a user by their ID or cookie ID and optionally cascade delete all related data.
-    At least one of user_id or cookie_id must be provided.
+    Delete a user by their cookie ID and optionally cascade delete all related data.
     This operation is atomic and cannot be undone.
     
     Args:
-        user_id: MongoDB document ID of the user (optional)
-        cookie_id: Cookie ID of the user (optional)
+        cookie_id: Cookie ID of the user
         cascade: If true, also delete all sessions (and their messages/turns/summaries)
     
     Returns:
@@ -51,11 +53,7 @@ async def delete_user(
         - turns_deleted: Number of turns deleted (only if cascade=true)
         - summaries_deleted: Number of summaries deleted (only if cascade=true)
     """
-    try:
-        return await UserService.delete_user(
-            user_id=user_id,
-            cookie_id=cookie_id,
-            cascade=cascade
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await UserService.delete_user(
+        cookie_id=cookie_id,
+        cascade=cascade
+    )

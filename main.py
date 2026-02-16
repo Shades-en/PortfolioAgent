@@ -76,6 +76,5 @@ if __name__ == "__main__":
     uvicorn.run("main:app", host=HOST, port=PORT, reload=RELOAD, workers=WORKERS)
 
 
-# Make changes to the schemas from omniagent being imported in ai_server services - so we are not giving more than what we should
-# user cookie needs to be put in ai_server - but in omniagent specific package
-# Need to also put feedback in ai_server same as above
+# Pass custom session name feature in sessionManager
+# Update frontend to match this contract

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from ai_server.api.services import MessageService
 from ai_server.api.dto.message import MessageFeedbackRequest, FeedbackType
-from ai_server.api.dependencies import get_user_id
+from ai_server.api.dependencies import get_cookie_id
 from ai_server.types import Feedback
 from omniagent.exceptions import MessageUpdateError
 
@@ -12,7 +12,7 @@ router = APIRouter()
 async def update_message_feedback(
     client_message_id: str,
     request: MessageFeedbackRequest,
-    user_id: str = Depends(get_user_id)
+    cookie_id: str = Depends(get_cookie_id)
 ) -> dict:
     """
     Update the feedback for a message.
@@ -20,7 +20,7 @@ async def update_message_feedback(
     Args:
         client_message_id: The frontend-generated message ID (from AI SDK)
         request: The feedback request containing feedback type (liked, disliked, or neutral)
-        user_id: User's MongoDB document ID from X-User-Id header
+        cookie_id: User's cookie ID for authorization
     
     Returns:
         Dictionary with update info:
@@ -29,7 +29,6 @@ async def update_message_feedback(
         - feedback: The feedback value that was set (liked, disliked, or null for neutral)
     
     Raises:
-        HTTPException 401: If X-User-Id header is missing
         HTTPException 404: If message not found or doesn't belong to user
         HTTPException 500: If update fails
     """
@@ -44,7 +43,7 @@ async def update_message_feedback(
         else:
             feedback = None
         
-        return await MessageService.update_message_feedback(client_message_id=client_message_id, feedback=feedback, user_id=user_id)
+        return await MessageService.update_message_feedback(client_message_id=client_message_id, feedback=feedback, cookie_id=cookie_id)
     except MessageUpdateError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=f"Message not found: {client_message_id}")
@@ -53,21 +52,18 @@ async def update_message_feedback(
 @router.delete("/messages/{client_message_id}", tags=["Message"])
 async def delete_message(
     client_message_id: str,
-    user_id: str = Depends(get_user_id)
+    cookie_id: str = Depends(get_cookie_id)
 ) -> dict:
     """
     Delete a message by its client ID.
     
     Args:
         client_message_id: The frontend-generated message ID (from AI SDK)
-        user_id: User's MongoDB document ID from X-User-Id header
+        cookie_id: User's cookie ID for authorization
     
     Returns:
         Dictionary with deletion info:
         - message_deleted: Whether the message was deleted (true/false)
         - deleted_count: Number of documents deleted (0 or 1)
-    
-    Raises:
-        HTTPException 401: If X-User-Id header is missing
     """
-    return await MessageService.delete_message(client_message_id=client_message_id, user_id=user_id)
+    return await MessageService.delete_message(client_message_id=client_message_id, cookie_id=cookie_id)

@@ -29,18 +29,12 @@ async def chat(chat_request: ChatRequest, response: Response):
         async with trace_context(
             query=chat_request.query_message.query,
             session_id=chat_request.session_id,
-            user_id=chat_request.user_id,
-                user_cookie=chat_request.user_cookie,
-                new_chat=chat_request.new_chat,
-                new_user=chat_request.new_user
+            user_cookie=chat_request.user_cookie,
         ):
             return await ChatService.chat(
                 query_message=chat_request.query_message,
                 session_id=chat_request.session_id,
-                user_id=chat_request.user_id,
                 user_cookie=chat_request.user_cookie,
-                new_chat=chat_request.new_chat,
-                new_user=chat_request.new_user,
                 options=chat_request.options,
             )
     finally:
@@ -61,13 +55,10 @@ async def chat_stream(chat_request: ChatRequest):
         add_graph_attributes(span, node_id="chat_orchestrator")
 
     # Get stream generator and result future from omniagent
-    stream_gen, _ = ChatService.chat_stream(
+    stream_gen, _ = await ChatService.chat_stream(
         query_message=chat_request.query_message,
         session_id=chat_request.session_id,
-        user_id=chat_request.user_id,
         user_cookie=chat_request.user_cookie,
-        new_chat=chat_request.new_chat,
-        new_user=chat_request.new_user,
         options=chat_request.options,
     )
 

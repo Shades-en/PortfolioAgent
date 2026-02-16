@@ -14,20 +14,20 @@ from ai_server.utils.tracing import trace_operation
 class SessionService:
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def get_session(cls, session_id: str, user_id: str) -> dict:
+    async def get_session(cls, session_id: str, cookie_id: str) -> dict | None:
         """
         Get a session by its ID.
         
         Args:
             session_id: The session ID
-            user_id: The user's MongoDB document ID for authorization
+            cookie_id: The user's cookie ID for authorization
             
         Returns:
             Dictionary with session data or None if not found
         
         Traced as CHAIN span for service-level orchestration.
         """
-        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
+        session = await Session.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
         if session is None:
             return None
         # Use mode='json' to serialize ObjectIds and exclude Link fields
@@ -38,7 +38,7 @@ class SessionService:
     async def get_session_messages(
         cls,
         session_id: str,
-        user_id: str,
+        cookie_id: str,
         page: int = 1,
         page_size: int = DEFAULT_MESSAGE_PAGE_SIZE
     ) -> dict:
@@ -48,7 +48,7 @@ class SessionService:
         
         Args:
             session_id: The session ID
-            user_id: The user's MongoDB document ID for authorization
+            cookie_id: The user's cookie ID for authorization
             page: Page number (1-indexed)
             page_size: Number of messages per page
             
@@ -62,7 +62,7 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         # First verify the session belongs to the user
-        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
+        session = await Session.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
         if session is None:
             return {
                 "count": 0,
@@ -104,13 +104,13 @@ class SessionService:
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def get_all_session_messages(cls, session_id: str, user_id: str) -> dict:
+    async def get_all_session_messages(cls, session_id: str, cookie_id: str) -> dict:
         """
         Get all messages for a session in chronological order (oldest to newest).
         
         Args:
             session_id: The session ID
-            user_id: The user's MongoDB document ID for authorization
+            cookie_id: The user's cookie ID for authorization
             
         Returns:
             Dictionary with count and results: {
@@ -121,7 +121,7 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         # First verify the session belongs to the user
-        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
+        session = await Session.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
         if session is None:
             return {
                 "count": 0,
@@ -237,14 +237,14 @@ class SessionService:
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def update_session_starred(cls, session_id: str, starred: bool, user_id: str) -> dict:
+    async def update_session_starred(cls, session_id: str, starred: bool, cookie_id: str) -> dict:
         """
         Update the starred status for a session.
         
         Args:
             session_id: The session ID to update
             starred: Whether the session should be starred (True) or unstarred (False)
-            user_id: The user's MongoDB document ID for authorization
+            cookie_id: The user's cookie ID for authorization
             
         Returns:
             Dictionary with update info: {
@@ -255,18 +255,18 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.update_starred(session_id, starred, user_id=user_id)
+        return await Session.update_starred_by_client_id(session_id, starred, client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def rename_session(cls, session_id: str, name: str, user_id: str) -> dict:
+    async def rename_session(cls, session_id: str, name: str, cookie_id: str) -> dict:
         """
         Rename a session.
         
         Args:
             session_id: The session ID to rename
             name: New name for the session
-            user_id: The user's MongoDB document ID for authorization
+            cookie_id: The user's cookie ID for authorization
             
         Returns:
             Dictionary with update info: {
@@ -277,31 +277,17 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
-        
-        if session is None:
-            return {
-                "session_updated": False,
-                "session_id": session_id,
-                "name": name
-            }
-        
-        await session.update_name(new_name=name)
-        return {
-            "session_updated": True,
-            "session_id": session_id,
-            "name": name
-        }
+        return await Session.update_name_by_client_id(session_id=session_id, name=name, client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def delete_session(cls, session_id: str, user_id: str) -> dict:
+    async def delete_session(cls, session_id: str, cookie_id: str) -> dict:
         """
         Delete a session and all its related data (messages, turns, summaries).
         
         Args:
             session_id: The session ID to delete
-            user_id: The user's MongoDB document ID for authorization
+            cookie_id: The user's cookie ID for authorization
             
         Returns:
             Dictionary with deletion counts: {
@@ -313,16 +299,16 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.delete_with_related(session_id, user_id=user_id)
+        return await Session.delete_with_related_by_client_id(session_id, client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def delete_all_user_sessions(cls, user_id: str) -> dict:
+    async def delete_all_user_sessions(cls, cookie_id: str) -> dict:
         """
         Delete all sessions for a user and all related data (messages, summaries).
         
         Args:
-            user_id: The user's MongoDB document ID
+            cookie_id: The user's cookie ID
             
         Returns:
             Dictionary with deletion counts: {
@@ -333,7 +319,7 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.delete_all_by_user_id(user_id=user_id)
+        return await Session.delete_all_by_user_client_id(client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -344,7 +330,7 @@ class SessionService:
         max_chat_name_length: int,
         max_chat_name_words: int,
         session_id: str | None = None,
-        user_id: str | None = None,
+        cookie_id: str | None = None,
     ) -> dict:
         """
         Generate a chat name for a session.
@@ -358,7 +344,7 @@ class SessionService:
             max_chat_name_length: Maximum length for generated chat names (from frontend)
             max_chat_name_words: Maximum words for generated chat names (from frontend)
             session_id: Optional session ID (if generating for existing session)
-            user_id: The user's MongoDB document ID for authorization
+            cookie_id: The user's cookie ID for authorization
             
         Returns:
             Dictionary with generated name: {
@@ -374,7 +360,7 @@ class SessionService:
             max_chat_name_length=max_chat_name_length,
             max_chat_name_words=max_chat_name_words,
             session_id=session_id,
-            user_id=user_id,
+            client_id=cookie_id,
         )
 
         return {"name": chat_name, "session_id": session_id}

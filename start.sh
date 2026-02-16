@@ -1,0 +1,1 @@
+unset OPENAI_BASE_URL OPENAI_API_KEY && python3 main.py

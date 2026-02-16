@@ -9,3 +9,5 @@ venv
 .vscode/settings.json
 
 .windsurf/plans
+
+.claude

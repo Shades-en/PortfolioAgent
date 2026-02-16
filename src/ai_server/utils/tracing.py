@@ -33,10 +33,7 @@ _graph_node_stack: ContextVar[list[str]] = ContextVar('graph_node_stack', defaul
 def set_trace_context(
     query: str | None = None,
     session_id: str | None = None,
-    user_id: str | None = None,
     user_cookie: str | None = None,
-    new_chat: bool = False,
-    new_user: bool = False,
 ) -> None:
     """
     Set tracing context for the current async execution context.
@@ -47,19 +44,13 @@ def set_trace_context(
     Args:
         query: User's input query/message
         session_id: MongoDB session ID
-        user_id: MongoDB user ID
         user_cookie: User's cookie ID
-        new_chat: Whether this is a new chat session
-        new_user: Whether this is a new user
     
     Example:
         >>> set_trace_context(
         ...     query="What's the weather like?",
         ...     session_id="507f1f77bcf86cd799439011",
-        ...     user_id="507f191e810c19729de860ea",
         ...     user_cookie="abc123",
-        ...     new_chat=False,
-        ...     new_user=False
         ... )
     
     Note:
@@ -69,10 +60,7 @@ def set_trace_context(
     _trace_context.set({
         "query": query,
         "session_id": session_id,
-        "user_id": user_id,
         "user_cookie": user_cookie,
-        "new_chat": new_chat,
-        "new_user": new_user,
     })
 
 
@@ -81,7 +69,7 @@ def get_trace_context() -> dict[str, Any]:
     Get the current tracing context for this async execution.
     
     Returns:
-        Dictionary containing query, session_id, user_id, user_cookie, turn_number, new_chat, new_user.
+        Dictionary containing query, session_id, user_cookie.
         Returns empty dict if no context has been set.
     
     Example:
@@ -108,10 +96,7 @@ def clear_trace_context() -> None:
 async def trace_context(
     query: str | None = None,
     session_id: str | None = None,
-    user_id: str | None = None,
     user_cookie: str | None = None,
-    new_chat: bool = False,
-    new_user: bool = False,
 ):
     """
     Context manager for tracing context lifecycle.
@@ -122,16 +107,12 @@ async def trace_context(
     Args:
         query: User's input query/message
         session_id: MongoDB session ID
-        user_id: MongoDB user ID
         user_cookie: User's cookie ID
-        new_chat: Whether this is a new chat session
-        new_user: Whether this is a new user
     
     Usage:
         >>> async with trace_context(
         ...     query="What's the weather?",
         ...     session_id="507f1f77bcf86cd799439011",
-        ...     user_id="507f191e810c19729de860ea",
         ... ):
         ...     # Context is set here
         ...     result = await runner.run(query)
@@ -149,10 +130,7 @@ async def trace_context(
     set_trace_context(
         query=query,
         session_id=session_id,
-        user_id=user_id,
         user_cookie=user_cookie,
-        new_chat=new_chat,
-        new_user=new_user
     )
     
     try:
@@ -449,11 +427,8 @@ def trace_method(
                         ),
                         SpanAttributes.INPUT_VALUE: input_value or "",
                         "session_id": ctx.get("session_id", ""),
-                        "user_id": ctx.get("user_id", ""),
                         "user_cookie": ctx.get("user_cookie", ""),
                         "turn_number": ctx.get("turn_number", ""),
-                        "new_chat": ctx.get("new_chat", False),
-                        "new_user": ctx.get("new_user", False),
                         "created_at": time.time(),
                         "metadata": json.dumps(metadata),
                     })

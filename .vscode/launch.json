@@ -16,35 +16,5 @@
             "stopOnEntry": false,
             "args": []
         },
-        {
-            "name": "Python: Test Script",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/dev/test.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            },
-            "justMyCode": false,
-            "stopOnEntry": false,
-            "args": []
-        },
-        {
-            "name": "Python: Delete Data",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/dev/delete_data.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            },
-            "justMyCode": false,
-            "stopOnEntry": false,
-            "args": []
-        }
     ]
 }

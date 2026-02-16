@@ -18,19 +18,13 @@ class ChatService:
         cls,
         *,
         session_id: str | None,
-        user_id: str | None,
         user_cookie: str,
-        new_chat: bool,
-        new_user: bool,
         options: ChatRequestOptions | None,
         stream: bool,
     ) -> Runner:
         session_manager = MongoSessionManager(
-            user_id=user_id,
             session_id=session_id,
             user_client_id=user_cookie,
-            new_chat=new_chat,
-            new_user=new_user,
         )
 
         agent = AboutMeAgent(
@@ -52,10 +46,7 @@ class ChatService:
         cls, 
         query_message: MessageQuery, 
         session_id: str | None, 
-        user_id: str | None, 
         user_cookie: str, 
-        new_chat: bool,
-        new_user: bool,
         options: ChatRequestOptions | None = None,
     ) -> dict:
         """
@@ -68,10 +59,7 @@ class ChatService:
         """
         runner = cls._build_runner(
             session_id=session_id,
-            user_id=user_id,
             user_cookie=user_cookie,
-            new_chat=new_chat,
-            new_user=new_user,
             options=options,
             stream=False,
         )
@@ -82,14 +70,11 @@ class ChatService:
         kind=OpenInferenceSpanKindValues.CHAIN,
         graph_node_id="chat_service"
     )
-    def chat_stream(
+    async def chat_stream(
         cls, 
         query_message: MessageQuery, 
         session_id: str | None, 
-        user_id: str | None, 
         user_cookie: str, 
-        new_chat: bool,
-        new_user: bool,
         options: ChatRequestOptions | None = None,
     ) -> Tuple[AsyncGenerator[str, None], asyncio.Future]:
         """
@@ -104,11 +89,8 @@ class ChatService:
         """
         runner = cls._build_runner(
             session_id=session_id,
-            user_id=user_id,
             user_cookie=user_cookie,
-            new_chat=new_chat,
-            new_user=new_user,
             options=options,
             stream=True,
         )
-        return runner.run_stream(query_message=query_message)
+        return await runner.run_stream(query_message=query_message)
