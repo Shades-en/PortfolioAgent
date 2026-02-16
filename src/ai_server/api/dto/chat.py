@@ -2,10 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 from ai_server.utils.general import generate_id
-
-class MessageQuery(BaseModel):
-    query: str = Field(..., description="The query to be sent to the chatbot")
-    id: str | None = Field(default_factory=lambda: generate_id(16, "nanoid"), description="The frontend-generated id of the message (e.g., from AI SDK)")
+from omniagent.types import MessageQuery
 
 class ChatRequestOptions(BaseModel):
     api_type: Literal["responses", "chat_completion"] = Field(default="responses", description="OpenAI API type to use: 'responses' (default) or 'chat_completion'")

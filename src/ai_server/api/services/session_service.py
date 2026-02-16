@@ -4,10 +4,10 @@ import math
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
-from ai_server.schemas import Session, Message, Summary
-from ai_server.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE, LLM_PROVIDER
+from omniagent.schemas import Session, Message, Summary
+from omniagent.ai.providers import get_llm_provider
+from omniagent.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE, LLM_PROVIDER
 from ai_server.utils.tracing import trace_operation
-from ai_server.ai.providers import get_llm_provider
 
 
 class SessionService:

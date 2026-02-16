@@ -1,7 +1,8 @@
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
-from ai_server.schemas import Message, Feedback
+from omniagent.schemas import Message
+from omniagent.types import Feedback
 from ai_server.utils.tracing import trace_operation
 
 

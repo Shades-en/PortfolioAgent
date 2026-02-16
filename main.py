@@ -74,3 +74,7 @@ app.openapi_schema = openapi_schema
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host=HOST, port=PORT, reload=RELOAD, workers=WORKERS)
+
+
+# There are two functions in chatServices that need to be taken care and need to make sure that its backward compatible with non streaming chat endpoint
+# Make changes to the schemas from omniagent being imported in ai_server services - so we are not giving more than what we should

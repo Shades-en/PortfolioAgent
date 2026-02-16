@@ -3,9 +3,9 @@ from bson.errors import InvalidId
 
 from ai_server.api.services import SessionService
 from ai_server.api.dto.session import SessionStarredRequest, SessionRenameRequest, GenerateChatNameRequest
-from ai_server.api.exceptions.db_exceptions import SessionUpdateFailedException
 from ai_server.api.dependencies import get_user_id, get_optional_user_id
-from ai_server.config import (
+from omniagent.exceptions import SessionUpdateError
+from omniagent.config import (
     DEFAULT_MESSAGE_PAGE_SIZE,
     MAX_MESSAGE_PAGE_SIZE,
     DEFAULT_SESSION_PAGE_SIZE,
@@ -185,7 +185,7 @@ async def rename_session(
         return result
     except InvalidId:
         raise HTTPException(status_code=400, detail=f"Invalid session ID format: {session_id}")
-    except SessionUpdateFailedException as e:
+    except SessionUpdateError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
         raise HTTPException(status_code=500, detail=f"Failed to rename session: {str(e)}")
@@ -220,7 +220,7 @@ async def update_session_starred(
         return await SessionService.update_session_starred(session_id=session_id, starred=request.starred, user_id=user_id)
     except InvalidId:
         raise HTTPException(status_code=400, detail=f"Invalid session ID format: {session_id}")
-    except SessionUpdateFailedException as e:
+    except SessionUpdateError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
         raise HTTPException(status_code=500, detail=f"Failed to update session starred status: {str(e)}")

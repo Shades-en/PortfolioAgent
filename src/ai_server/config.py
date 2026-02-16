@@ -20,8 +20,4 @@ CORS_ALLOW_HEADERS = os.getenv("CORS_ALLOW_HEADERS", "*").split(",")
 # Development mode - enables index dropping and other dev features
 DEV_MODE = _env_flag("DEV_MODE", False)
 
-# Pagination Configuration
-DEFAULT_MESSAGE_PAGE_SIZE = int(os.getenv("DEFAULT_MESSAGE_PAGE_SIZE", 50))
-MAX_MESSAGE_PAGE_SIZE = int(os.getenv("MAX_MESSAGE_PAGE_SIZE", 100))
-DEFAULT_SESSION_PAGE_SIZE = int(os.getenv("DEFAULT_SESSION_PAGE_SIZE", 20))
-MAX_SESSION_PAGE_SIZE = int(os.getenv("MAX_SESSION_PAGE_SIZE", 50))
+# Note: Pagination config (DEFAULT_MESSAGE_PAGE_SIZE, etc.) is now in omniagent.config

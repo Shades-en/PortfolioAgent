@@ -1,12 +1,16 @@
 from openinference.semconv.trace import OpenInferenceSpanKindValues
+from typing import AsyncGenerator, Tuple
+import asyncio
 
-from ai_server.ai.runner import Runner
-from ai_server.ai.agents.agent import AboutMeAgent
-from ai_server.ai.tools.tools import GetCompanyName, GetHoroscope
+from omniagent.ai.runner import Runner
+from omniagent.session import MongoSessionManager
+from omniagent.types import MessageQuery, RunnerOptions
 
-from ai_server.session_manager import SessionManager
+from ai_server.agents import AboutMeAgent
+from ai_server.tools import GetCompanyName, GetHoroscope
 from ai_server.utils.tracing import trace_method
-from ai_server.api.dto.chat import MessageQuery, ChatRequestOptions
+from ai_server.api.dto.chat import ChatRequestOptions
+
 
 class ChatService:
     @classmethod
@@ -23,10 +27,15 @@ class ChatService:
         new_chat: bool,
         new_user: bool,
         options: ChatRequestOptions | None = None,
+        stream: bool = True,
         on_stream_event=None,
     ) -> dict:
         """
         Handle a chat request by orchestrating session management, agent creation, and query execution.
+        
+        Args:
+            stream: Whether to enable streaming responses (default: True)
+            on_stream_event: Callback for streaming events (required if stream=True)
         
         Tracing context is set by endpoint. This method is traced as a CHAIN span
         representing the service-level workflow orchestration.
@@ -34,7 +43,7 @@ class ChatService:
         Graph node: chat_service (parent inferred from span hierarchy)
         """
         # Initialize session manager with user context
-        session_manager = SessionManager(
+        session_manager = MongoSessionManager(
             user_id=user_id, 
             session_id=session_id,
             user_cookie=user_cookie,
@@ -49,6 +58,51 @@ class ChatService:
             tools=[GetCompanyName(), GetHoroscope()],
         )
 
-        # Execute query through runner
-        runner = Runner(agent=agent, session_manager=session_manager, options=options)
+        # Execute query through runner with options
+        api_type = options.api_type if options else "responses"
+        runner_options = RunnerOptions(api_type=api_type, stream=stream)
+        runner = Runner(agent=agent, session_manager=session_manager, options=runner_options)
         return await runner.run(query_message=query_message, on_stream_event=on_stream_event)
+
+    @classmethod
+    def chat_stream(
+        cls, 
+        query_message: MessageQuery, 
+        session_id: str | None, 
+        user_id: str | None, 
+        user_cookie: str | None, 
+        new_chat: bool,
+        new_user: bool,
+        options: ChatRequestOptions | None = None,
+    ) -> Tuple[AsyncGenerator[str, None], asyncio.Future]:
+        """
+        Handle a streaming chat request, returning a generator and result future.
+        
+        This method provides a cleaner streaming API where:
+        - The generator yields formatted SSE events (including DONE sentinel)
+        - The result dict is available via the future after stream completes
+        
+        Returns:
+            Tuple of (event_generator, result_future)
+        """
+        # Initialize session manager with user context
+        session_manager = MongoSessionManager(
+            user_id=user_id, 
+            session_id=session_id,
+            user_cookie=user_cookie,
+            new_chat=new_chat,
+            new_user=new_user
+        )
+
+        # Create agent with tools
+        agent = AboutMeAgent(
+            description="An agent that can answer questions about itself",
+            instructions="You are to answer any question posed to you",
+            tools=[GetCompanyName(), GetHoroscope()],
+        )
+
+        # Execute query through runner with streaming
+        api_type = options.api_type if options else "responses"
+        runner_options = RunnerOptions(api_type=api_type, stream=True)
+        runner = Runner(agent=agent, session_manager=session_manager, options=runner_options)
+        return runner.run_stream(query_message=query_message)

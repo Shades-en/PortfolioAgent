@@ -3,8 +3,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from ai_server.api.services import MessageService
 from ai_server.api.dto.message import MessageFeedbackRequest, FeedbackType
 from ai_server.api.dependencies import get_user_id
-from ai_server.schemas import Feedback
-from ai_server.api.exceptions.db_exceptions import MessageUpdateFailedException
+from omniagent.types import Feedback
+from omniagent.exceptions import MessageUpdateError
 
 router = APIRouter()
 
@@ -45,7 +45,7 @@ async def update_message_feedback(
             feedback = None
         
         return await MessageService.update_message_feedback(client_message_id=client_message_id, feedback=feedback, user_id=user_id)
-    except MessageUpdateFailedException as e:
+    except MessageUpdateError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=f"Message not found: {client_message_id}")
         raise HTTPException(status_code=500, detail=f"Failed to update message feedback: {str(e)}")
