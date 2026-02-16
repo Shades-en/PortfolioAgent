@@ -14,6 +14,36 @@ from ai_server.api.dto.chat import ChatRequestOptions
 
 class ChatService:
     @classmethod
+    def _build_runner(
+        cls,
+        *,
+        session_id: str | None,
+        user_id: str | None,
+        user_cookie: str | None,
+        new_chat: bool,
+        new_user: bool,
+        options: ChatRequestOptions | None,
+        stream: bool,
+    ) -> Runner:
+        session_manager = MongoSessionManager(
+            user_id=user_id,
+            session_id=session_id,
+            user_cookie=user_cookie,
+            new_chat=new_chat,
+            new_user=new_user,
+        )
+
+        agent = AboutMeAgent(
+            description="An agent that can answer questions about itself",
+            instructions="You are to answer any question posed to you",
+            tools=[GetCompanyName(), GetHoroscope()],
+        )
+
+        api_type = options.api_type if options else "responses"
+        runner_options = RunnerOptions(api_type=api_type, stream=stream)
+        return Runner(agent=agent, session_manager=session_manager, options=runner_options)
+
+    @classmethod
     @trace_method(
         kind=OpenInferenceSpanKindValues.CHAIN,
         graph_node_id="chat_service"
@@ -27,44 +57,31 @@ class ChatService:
         new_chat: bool,
         new_user: bool,
         options: ChatRequestOptions | None = None,
-        stream: bool = True,
-        on_stream_event=None,
     ) -> dict:
         """
         Handle a chat request by orchestrating session management, agent creation, and query execution.
-        
-        Args:
-            stream: Whether to enable streaming responses (default: True)
-            on_stream_event: Callback for streaming events (required if stream=True)
         
         Tracing context is set by endpoint. This method is traced as a CHAIN span
         representing the service-level workflow orchestration.
         
         Graph node: chat_service (parent inferred from span hierarchy)
         """
-        # Initialize session manager with user context
-        session_manager = MongoSessionManager(
-            user_id=user_id, 
+        runner = cls._build_runner(
             session_id=session_id,
+            user_id=user_id,
             user_cookie=user_cookie,
             new_chat=new_chat,
-            new_user=new_user
+            new_user=new_user,
+            options=options,
+            stream=False,
         )
-
-        # Create agent with tools
-        agent = AboutMeAgent(
-            description="An agent that can answer questions about itself",
-            instructions="You are to answer any question posed to you",
-            tools=[GetCompanyName(), GetHoroscope()],
-        )
-
-        # Execute query through runner with options
-        api_type = options.api_type if options else "responses"
-        runner_options = RunnerOptions(api_type=api_type, stream=stream)
-        runner = Runner(agent=agent, session_manager=session_manager, options=runner_options)
-        return await runner.run(query_message=query_message, on_stream_event=on_stream_event)
+        return await runner.run(query_message=query_message)
 
     @classmethod
+    @trace_method(
+        kind=OpenInferenceSpanKindValues.CHAIN,
+        graph_node_id="chat_service"
+    )
     def chat_stream(
         cls, 
         query_message: MessageQuery, 
@@ -85,24 +102,13 @@ class ChatService:
         Returns:
             Tuple of (event_generator, result_future)
         """
-        # Initialize session manager with user context
-        session_manager = MongoSessionManager(
-            user_id=user_id, 
+        runner = cls._build_runner(
             session_id=session_id,
+            user_id=user_id,
             user_cookie=user_cookie,
             new_chat=new_chat,
-            new_user=new_user
+            new_user=new_user,
+            options=options,
+            stream=True,
         )
-
-        # Create agent with tools
-        agent = AboutMeAgent(
-            description="An agent that can answer questions about itself",
-            instructions="You are to answer any question posed to you",
-            tools=[GetCompanyName(), GetHoroscope()],
-        )
-
-        # Execute query through runner with streaming
-        api_type = options.api_type if options else "responses"
-        runner_options = RunnerOptions(api_type=api_type, stream=True)
-        runner = Runner(agent=agent, session_manager=session_manager, options=runner_options)
         return runner.run_stream(query_message=query_message)

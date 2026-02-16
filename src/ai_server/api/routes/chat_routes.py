@@ -22,21 +22,17 @@ async def chat(chat_request: ChatRequest, response: Response):
     if span.is_recording():
         add_graph_attributes(span, node_id="chat_orchestrator")
     try:
-        # Set Vercel streaming-compatible headers for the response
-        response.headers["x-vercel-ai-ui-message-stream"] = "v1"
-        response.headers["Cache-Control"] = "no-cache"
-        response.headers["Connection"] = "keep-alive"
-        response.headers["X-Accel-Buffering"] = "no"
-        response.headers.setdefault("x-vercel-ai-protocol", "data")
+        # Use the shared omniagent helper for Vercel AI SDK-compatible headers
+        response.headers.update(get_streaming_headers())
 
         # Set business context
         async with trace_context(
             query=chat_request.query_message.query,
             session_id=chat_request.session_id,
             user_id=chat_request.user_id,
-            user_cookie=chat_request.user_cookie,
-            new_chat=chat_request.new_chat,
-            new_user=chat_request.new_user
+                user_cookie=chat_request.user_cookie,
+                new_chat=chat_request.new_chat,
+                new_user=chat_request.new_user
         ):
             return await ChatService.chat(
                 query_message=chat_request.query_message,
@@ -46,7 +42,6 @@ async def chat(chat_request: ChatRequest, response: Response):
                 new_chat=chat_request.new_chat,
                 new_user=chat_request.new_user,
                 options=chat_request.options,
-                stream=False,
             )
     finally:
         # Pop orchestrator from stack

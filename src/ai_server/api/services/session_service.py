@@ -5,8 +5,8 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
 from omniagent.schemas import Session, Message, Summary
-from omniagent.ai.providers import get_llm_provider
-from omniagent.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE, LLM_PROVIDER
+from omniagent.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE
+from omniagent.session import MongoSessionManager
 from ai_server.utils.tracing import trace_operation
 
 
@@ -374,59 +374,13 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        llm_provider = get_llm_provider(provider_name=LLM_PROVIDER)
-        
-        # For new chats - generate from query only
-        if not session_id:
-            chat_name = await llm_provider.generate_chat_name(
-                query=query,
-                max_chat_name_length=max_chat_name_length,
-                max_chat_name_words=max_chat_name_words,
-            )
-            return {
-                "name": chat_name,
-                "session_id": None
-            }
-        
-        # For existing sessions - fetch context first
-        session = await Session.get_by_id(session_id=session_id, user_id=user_id)
-        if session is None:
-            # Session not found - generate from query only as fallback
-            chat_name = await llm_provider.generate_chat_name(
-                query=query,
-                max_chat_name_length=max_chat_name_length,
-                max_chat_name_words=max_chat_name_words,
-            )
-            return {
-                "name": chat_name,
-                "session_id": session_id
-            }
-        
-        # Calculate context size: 2 * turns_between_chat_name
-        chat_name_context_max_messages = 2 * turns_between_chat_name
-        
-        # Fetch summary and recent messages in parallel
-        summary_task = Summary.get_latest_by_session(session_id=session_id)
-        messages_task = Message.get_paginated_by_session(
-            session_id=session_id,
-            page=1,
-            page_size=chat_name_context_max_messages,
-        )
-        summary, messages = await asyncio.gather(summary_task, messages_task)
-        
-        # Convert messages to MessageDTO format
-        conversation_to_summarize = Message.to_dtos(messages) if messages else None
-        
-        # Generate chat name with context
-        chat_name = await llm_provider.generate_chat_name(
+        chat_name = await MongoSessionManager.generate_chat_name(
             query=query,
-            previous_summary=summary,
-            conversation_to_summarize=conversation_to_summarize,
+            turns_between_chat_name=turns_between_chat_name,
             max_chat_name_length=max_chat_name_length,
             max_chat_name_words=max_chat_name_words,
+            session_id=session_id,
+            user_id=user_id,
         )
-        
-        return {
-            "name": chat_name,
-            "session_id": session_id
-        }
+
+        return {"name": chat_name, "session_id": session_id}
