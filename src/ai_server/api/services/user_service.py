@@ -27,7 +27,7 @@ class UserService:
         if not user_id and not cookie_id:
             raise ValueError("Either user_id or cookie_id must be provided")
         
-        return await User.get_by_id_or_cookie(user_id=user_id, cookie_id=cookie_id)
+        return await User.get_by_id_or_client_id(user_id=user_id, client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -62,8 +62,8 @@ class UserService:
         if not user_id and not cookie_id:
             raise ValueError("Either user_id or cookie_id must be provided")
         
-        return await User.delete_by_id_or_cookie(
+        return await User.delete_by_id_or_client_id(
             user_id=user_id, 
-            cookie_id=cookie_id, 
+            client_id=cookie_id, 
             cascade=cascade
         )

@@ -162,12 +162,12 @@ class SessionService:
         """
         # Fetch paginated sessions and total count in parallel
         sessions, total_count = await asyncio.gather(
-            Session.get_paginated_by_user_cookie(
-                cookie_id=cookie_id,
+            Session.get_paginated_by_user_client_id(
+                client_id=cookie_id,
                 page=page,
                 page_size=page_size
             ),
-            Session.count_by_user_cookie(cookie_id=cookie_id)
+            Session.count_by_user_client_id(client_id=cookie_id)
         )
         
         # Calculate pagination metadata
@@ -175,8 +175,7 @@ class SessionService:
         has_next = page < total_pages
         has_previous = page > 1
         
-        # Use mode='json' to serialize ObjectIds and exclude Link fields
-        results = [session.model_dump(mode='json', exclude={'user'}) for session in sessions]
+        results = Session.to_public_dicts(sessions)
         return {
             "count": len(results),
             "total_count": total_count,
@@ -205,9 +204,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        sessions = await Session.get_all_by_user_cookie(cookie_id=cookie_id)
-        # Use mode='json' to serialize ObjectIds and exclude Link fields
-        results = [session.model_dump(mode='json', exclude={'user'}) for session in sessions]
+        sessions = await Session.get_all_by_user_client_id(client_id=cookie_id)
+        results = Session.to_public_dicts(sessions)
         return {
             "count": len(results),
             "results": results
@@ -230,9 +228,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        sessions = await Session.get_starred_by_user_cookie(cookie_id=cookie_id)
-        # Use mode='json' to serialize ObjectIds and exclude Link fields
-        results = [session.model_dump(mode='json', exclude={'user'}) for session in sessions]
+        sessions = await Session.get_starred_by_user_client_id(client_id=cookie_id)
+        results = Session.to_public_dicts(sessions)
         return {
             "count": len(results),
             "results": results
