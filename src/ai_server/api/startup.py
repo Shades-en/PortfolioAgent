@@ -2,9 +2,12 @@ from contextlib import asynccontextmanager
 from opentelemetry.trace import SpanKind
 
 from omniagent.session import MongoSessionManager
+from omniagent.db.document_models import DocumentModels
+from omniagent.schemas.mongo import User, Session, Summary
 from ai_server.utils.tracing import trace_operation
 from ai_server.constants import SERVER_STARTUP, SERVER_SHUTDOWN, SERVER
 from ai_server.config import DEV_MODE
+from ai_server.schemas import CustomMessage
 
 from fastapi import FastAPI
 
@@ -13,7 +16,15 @@ from fastapi import FastAPI
 async def _startup():
     """Initialize MongoDB connection via OmniAgent."""
     # In DEV_MODE, allow dropping indexes to handle schema changes
-    await MongoSessionManager.initialize(allow_index_dropping=DEV_MODE)
+    await MongoSessionManager.initialize(
+        allow_index_dropping=DEV_MODE,
+        models=DocumentModels(
+            user=User,
+            session=Session,
+            summary=Summary,
+            message=CustomMessage,
+        ),
+    )
 
 
 @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=SERVER, category=SERVER_SHUTDOWN)

@@ -4,9 +4,10 @@ import math
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
-from omniagent.schemas import Session, Message, Summary
+from omniagent.schemas import Session
 from omniagent.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE
 from omniagent.session import MongoSessionManager
+from ai_server.schemas import CustomMessage
 from ai_server.utils.tracing import trace_operation
 
 
@@ -76,12 +77,12 @@ class SessionService:
         
         # Fetch paginated messages and total count in parallel
         messages, total_count = await asyncio.gather(
-            Message.get_paginated_by_session(
+            CustomMessage.get_paginated_by_session(
                 session_id=session_id,
                 page=page,
                 page_size=page_size
             ),
-            Message.count_by_session(session_id=session_id)
+            CustomMessage.count_by_session(session_id=session_id)
         )
         
         # Calculate pagination metadata
@@ -89,9 +90,7 @@ class SessionService:
         has_next = page < total_pages
         has_previous = page > 1
         
-        # Convert to MessageDTO and serialize
-        message_dtos = Message.to_dtos(messages)
-        results = [dto.model_dump(mode='json') for dto in message_dtos]
+        results = CustomMessage.to_public_dicts(messages)
         return {
             "count": len(results),
             "total_count": total_count,
@@ -129,10 +128,8 @@ class SessionService:
                 "results": []
             }
         
-        messages = await Message.get_all_by_session(session_id=session_id)
-        # Convert to MessageDTO and serialize
-        message_dtos = Message.to_dtos(messages)
-        results = [dto.model_dump(mode='json') for dto in message_dtos]
+        messages = await CustomMessage.get_all_by_session(session_id=session_id)
+        results = CustomMessage.to_public_dicts(messages)
         return {
             "count": len(results),
             "results": results

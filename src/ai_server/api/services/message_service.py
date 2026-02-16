@@ -1,8 +1,8 @@
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
-from omniagent.schemas import Message
-from omniagent.types import Feedback
+from ai_server.schemas import CustomMessage
+from ai_server.types import Feedback
 from ai_server.utils.tracing import trace_operation
 
 
@@ -27,7 +27,7 @@ class MessageService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Message.update_feedback(client_message_id, feedback, user_id=user_id)
+        return await CustomMessage.update_feedback(client_message_id, feedback, user_id=user_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -47,4 +47,4 @@ class MessageService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Message.delete_by_id(client_message_id, user_id=user_id)
+        return await CustomMessage.delete_by_id(client_message_id, user_id=user_id)

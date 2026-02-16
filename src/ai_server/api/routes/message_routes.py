@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from ai_server.api.services import MessageService
 from ai_server.api.dto.message import MessageFeedbackRequest, FeedbackType
 from ai_server.api.dependencies import get_user_id
-from omniagent.types import Feedback
+from ai_server.types import Feedback
 from omniagent.exceptions import MessageUpdateError
 
 router = APIRouter()
