@@ -300,7 +300,8 @@ async def generate_chat_name(
             max_chat_name_length=request.max_chat_name_length,
             max_chat_name_words=request.max_chat_name_words,
             session_id=request.session_id,
-            cookie_id=cookie_id
+            cookie_id=cookie_id,
+            provider_options=request.provider_options
         )
     except InvalidId:
         raise HTTPException(status_code=400, detail=f"Invalid session ID format: {request.session_id}")

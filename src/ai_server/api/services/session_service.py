@@ -331,6 +331,7 @@ class SessionService:
         max_chat_name_words: int,
         session_id: str | None = None,
         cookie_id: str | None = None,
+        provider_options: dict | None = None,
     ) -> dict:
         """
         Generate a chat name for a session.
@@ -361,6 +362,7 @@ class SessionService:
             max_chat_name_words=max_chat_name_words,
             session_id=session_id,
             client_id=cookie_id,
+            provider_options=provider_options,
         )
 
         return {"name": chat_name, "session_id": session_id}
