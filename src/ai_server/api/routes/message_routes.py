@@ -43,7 +43,14 @@ async def update_message_feedback(
         else:
             feedback = None
         
-        return await MessageService.update_message_feedback(client_message_id=client_message_id, feedback=feedback, cookie_id=cookie_id)
+        result = await MessageService.update_message_feedback(
+            client_message_id=client_message_id,
+            feedback=feedback,
+            cookie_id=cookie_id,
+        )
+        if not result.get("message_updated"):
+            raise HTTPException(status_code=404, detail=f"Message not found: {client_message_id}")
+        return result
     except MessageUpdateError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=f"Message not found: {client_message_id}")
