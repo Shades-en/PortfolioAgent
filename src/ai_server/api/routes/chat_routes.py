@@ -54,18 +54,22 @@ async def chat_stream(chat_request: ChatRequest):
     if span.is_recording():
         add_graph_attributes(span, node_id="chat_orchestrator")
 
-    # Get stream generator and result future from omniagent
-    stream_gen, _ = await ChatService.chat_stream(
-        query_message=chat_request.query_message,
-        session_id=chat_request.session_id,
-        user_cookie=chat_request.user_cookie,
-        provider_options=chat_request.provider_options,
-    )
-
     async def event_generator():
         try:
-            async for event in stream_gen:
-                yield event
+            async with trace_context(
+                query=chat_request.query_message.query,
+                session_id=chat_request.session_id,
+                user_cookie=chat_request.user_cookie,
+            ):
+                # Get stream generator and result future from omniagent
+                stream_gen, _ = await ChatService.chat_stream(
+                    query_message=chat_request.query_message,
+                    session_id=chat_request.session_id,
+                    user_cookie=chat_request.user_cookie,
+                    provider_options=chat_request.provider_options,
+                )
+                async for event in stream_gen:
+                    yield event
         finally:
             pop_graph_node()
 
