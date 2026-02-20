@@ -82,3 +82,7 @@ if __name__ == "__main__":
 # starred should not be in session schema it should be in custom session schema
 # Trace id needs to be passed in response header
 # allow provider name and mdoel to be provided from client side
+
+
+# Codex stuff
+# 1. We can have a github agent to do all push/pull operations
