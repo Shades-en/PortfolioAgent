@@ -3,11 +3,11 @@ from opentelemetry.trace import SpanKind
 
 from omniagent.db.document_models import DocumentModels
 from omniagent.persistence.backends.mongo import MongoBackendAdapter
-from omniagent.schemas.mongo import User, Session, Summary
+from omniagent.schemas.mongo import User, Summary
 from ai_server.utils.tracing import trace_operation
 from ai_server.constants import SERVER_STARTUP, SERVER_SHUTDOWN, SERVER, SESSION_BACKEND_MONGO
 from ai_server.config import DEV_MODE, SESSION_BACKEND
-from ai_server.schemas import CustomMessage
+from ai_server.schemas import CustomMessage, CustomSession
 
 from fastapi import FastAPI
 
@@ -23,7 +23,7 @@ async def _startup():
         allow_index_dropping=DEV_MODE,
         models=DocumentModels(
             user=User,
-            session=Session,
+            session=CustomSession,
             summary=Summary,
             message=CustomMessage,
         ),
