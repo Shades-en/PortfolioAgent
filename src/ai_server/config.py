@@ -1,6 +1,7 @@
 ## Configuration file for the ai-server
 
 from ai_server.utils.general import _env_flag
+from ai_server.constants import DEFAULT_SESSION_BACKEND
 
 import os
 
@@ -20,4 +21,5 @@ CORS_ALLOW_HEADERS = os.getenv("CORS_ALLOW_HEADERS", "*").split(",")
 # Development mode - enables index dropping and other dev features
 DEV_MODE = _env_flag("DEV_MODE", False)
 
-# Note: Pagination config (DEFAULT_MESSAGE_PAGE_SIZE, etc.) is now in omniagent.config
+# Persistence backend selection (used by startup validation)
+SESSION_BACKEND = os.getenv("SESSION_BACKEND", DEFAULT_SESSION_BACKEND)

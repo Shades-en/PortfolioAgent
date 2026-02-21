@@ -1,14 +1,18 @@
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
-from omniagent.schemas import User
+from omniagent.db.document_models import get_document_models
 from ai_server.utils.tracing import trace_operation
 
 
 class UserService:
+    @staticmethod
+    def _user_model():
+        return get_document_models().user
+
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
-    async def get_user(cls, cookie_id: str) -> User | None:
+    async def get_user(cls, cookie_id: str):
         """
         Get a user by their cookie ID.
         
@@ -20,7 +24,8 @@ class UserService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await User.get_by_client_id(client_id=cookie_id)
+        user_model = cls._user_model()
+        return await user_model.get_by_client_id(client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -47,7 +52,8 @@ class UserService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await User.delete_by_client_id(
+        user_model = cls._user_model()
+        return await user_model.delete_by_client_id(
             client_id=cookie_id, 
             cascade=cascade
         )

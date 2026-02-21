@@ -16,15 +16,16 @@ class CustomMessage(BaseMessage):
     feedback: Feedback | None = Field(default=None)
 
     @classmethod
-    async def update_feedback(cls, client_message_id: str, feedback: Feedback | None, user_id: str) -> dict:
+    async def update_feedback_by_client_id(cls, client_message_id: str, feedback: Feedback | None, client_id: str) -> dict:
         try:
-            message = await cls.get_by_client_id(client_message_id, user_id)
+            message = await cls.get_by_client_message_id_and_client_id(client_message_id, client_id)
 
             if not message:
-                raise MessageUpdateError(
-                    "Message not found",
-                    details=f"client_message_id={client_message_id}",
-                )
+                return {
+                    "message_updated": False,
+                    "message_id": client_message_id,
+                    "feedback": feedback.value if feedback else None,
+                }
 
             message.feedback = feedback
             await message.save()
@@ -39,5 +40,5 @@ class CustomMessage(BaseMessage):
         except Exception as exc:
             raise MessageUpdateError(
                 "Failed to update message feedback",
-                details=f"client_message_id={client_message_id}, feedback={feedback}, error={str(exc)}",
+                details=f"client_message_id={client_message_id}, client_id={client_id}, feedback={feedback}, error={str(exc)}",
             )

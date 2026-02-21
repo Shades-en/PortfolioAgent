@@ -4,14 +4,21 @@ import math
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 from opentelemetry.trace import SpanKind
 
-from omniagent.schemas import Session
 from omniagent.config import DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_SESSION_PAGE_SIZE
+from omniagent.db.document_models import get_document_models
 from omniagent.session import MongoSessionManager
-from ai_server.schemas import CustomMessage
 from ai_server.utils.tracing import trace_operation
 
 
 class SessionService:
+    @staticmethod
+    def _session_model():
+        return get_document_models().session
+
+    @staticmethod
+    def _message_model():
+        return get_document_models().message
+
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
     async def get_session(cls, session_id: str, cookie_id: str) -> dict | None:
@@ -27,7 +34,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        session = await Session.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
+        session_model = cls._session_model()
+        session = await session_model.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
         if session is None:
             return None
         # Use mode='json' to serialize ObjectIds and exclude Link fields
@@ -62,7 +70,9 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         # First verify the session belongs to the user
-        session = await Session.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
+        session_model = cls._session_model()
+        message_model = cls._message_model()
+        session = await session_model.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
         if session is None:
             return {
                 "count": 0,
@@ -77,12 +87,12 @@ class SessionService:
         
         # Fetch paginated messages and total count in parallel
         messages, total_count = await asyncio.gather(
-            CustomMessage.get_paginated_by_session(
+            message_model.get_paginated_by_session(
                 session_id=session_id,
                 page=page,
                 page_size=page_size
             ),
-            CustomMessage.count_by_session(session_id=session_id)
+            message_model.count_by_session(session_id=session_id)
         )
         
         # Calculate pagination metadata
@@ -90,7 +100,7 @@ class SessionService:
         has_next = page < total_pages
         has_previous = page > 1
         
-        results = CustomMessage.to_public_dicts(messages)
+        results = message_model.to_public_dicts(messages)
         return {
             "count": len(results),
             "total_count": total_count,
@@ -121,15 +131,17 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         # First verify the session belongs to the user
-        session = await Session.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
+        session_model = cls._session_model()
+        message_model = cls._message_model()
+        session = await session_model.get_by_id_and_client_id(session_id=session_id, client_id=cookie_id)
         if session is None:
             return {
                 "count": 0,
                 "results": []
             }
         
-        messages = await CustomMessage.get_all_by_session(session_id=session_id)
-        results = CustomMessage.to_public_dicts(messages)
+        messages = await message_model.get_all_by_session(session_id=session_id)
+        results = message_model.to_public_dicts(messages)
         return {
             "count": len(results),
             "results": results
@@ -161,13 +173,14 @@ class SessionService:
         Traced as CHAIN span for service-level orchestration.
         """
         # Fetch paginated sessions and total count in parallel
+        session_model = cls._session_model()
         sessions, total_count = await asyncio.gather(
-            Session.get_paginated_by_user_client_id(
+            session_model.get_paginated_by_user_client_id(
                 client_id=cookie_id,
                 page=page,
                 page_size=page_size
             ),
-            Session.count_by_user_client_id(client_id=cookie_id)
+            session_model.count_by_user_client_id(client_id=cookie_id)
         )
         
         # Calculate pagination metadata
@@ -175,7 +188,7 @@ class SessionService:
         has_next = page < total_pages
         has_previous = page > 1
         
-        results = Session.to_public_dicts(sessions)
+        results = session_model.to_public_dicts(sessions)
         return {
             "count": len(results),
             "total_count": total_count,
@@ -204,8 +217,9 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        sessions = await Session.get_all_by_user_client_id(client_id=cookie_id)
-        results = Session.to_public_dicts(sessions)
+        session_model = cls._session_model()
+        sessions = await session_model.get_all_by_user_client_id(client_id=cookie_id)
+        results = session_model.to_public_dicts(sessions)
         return {
             "count": len(results),
             "results": results
@@ -228,8 +242,9 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        sessions = await Session.get_starred_by_user_client_id(client_id=cookie_id)
-        results = Session.to_public_dicts(sessions)
+        session_model = cls._session_model()
+        sessions = await session_model.get_starred_by_user_client_id(client_id=cookie_id)
+        results = session_model.to_public_dicts(sessions)
         return {
             "count": len(results),
             "results": results
@@ -255,7 +270,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.update_starred_by_client_id(session_id, starred, client_id=cookie_id)
+        session_model = cls._session_model()
+        return await session_model.update_starred_by_client_id(session_id, starred, client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -277,7 +293,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.update_name_by_client_id(session_id=session_id, name=name, client_id=cookie_id)
+        session_model = cls._session_model()
+        return await session_model.update_name_by_client_id(session_id=session_id, name=name, client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -299,7 +316,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.delete_with_related_by_client_id(session_id, client_id=cookie_id)
+        session_model = cls._session_model()
+        return await session_model.delete_with_related_by_client_id(session_id, client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)
@@ -319,7 +337,8 @@ class SessionService:
         
         Traced as CHAIN span for service-level orchestration.
         """
-        return await Session.delete_all_by_user_client_id(client_id=cookie_id)
+        session_model = cls._session_model()
+        return await session_model.delete_all_by_user_client_id(client_id=cookie_id)
     
     @classmethod
     @trace_operation(kind=SpanKind.INTERNAL, open_inference_kind=OpenInferenceSpanKindValues.CHAIN)

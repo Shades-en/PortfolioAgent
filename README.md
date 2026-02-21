@@ -1,9 +1,11 @@
 # AI Agent Server
 
+## Session Backend
+- Backend selection is controlled via `SESSION_BACKEND`.
+- Default: `SESSION_BACKEND=mongo`.
+- Set this in both `.env` and `.env.example`.
+
 ## TODO
-- Pass custom session name feature in sessionManager
-  - The import for mongo schemas should have some relation to it in import path??
-  - The rename session feature should be in sessionManager base class
 - starred should not be in session schema it should be in custom session schema
 - Trace id needs to be passed in response header
 - allow provider name and mdoel to be provided from client side
