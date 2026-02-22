@@ -7,7 +7,7 @@ from pydantic import Field
 
 from omniagent.exceptions import SessionRetrievalError, SessionUpdateError
 from omniagent.schemas.mongo.session import Session as BaseSession
-from omniagent.utils.tracing import CustomSpanKinds, trace_operation
+from omniagent.tracing import CustomSpanKinds, trace_operation
 
 
 class CustomSession(BaseSession):

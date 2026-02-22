@@ -9,8 +9,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from omniagent.utils import tracing as _base_tracing
-from omniagent.utils.tracing import (
+import omniagent.tracing as _base_tracing
+from omniagent.tracing import (
     add_graph_attributes,
     pop_graph_node,
     trace_method,

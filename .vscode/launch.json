@@ -10,11 +10,12 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "OPENAI_BASE_URL": "https://api.openai.com/v1"
             },
             "justMyCode": false,
             "stopOnEntry": false,
             "args": []
-        },
+        }
     ]
 }

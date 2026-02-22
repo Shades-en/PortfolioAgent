@@ -7,5 +7,5 @@
 
 ## TODO
 - 3. Trace id needs to be passed in response header
-- 2. allow provider name and model to be provided from client side
-- 1. tracing for individual provider such as mongodb has to be configured in backend and not in package
+- 2. allow provider name and model to be provided from client side - Need to just instantiate class of Agent no need to define as abstract class. Check similarly for Tool.
+- 1. Conversation history is lost, get it back.

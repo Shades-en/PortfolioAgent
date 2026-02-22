@@ -10,7 +10,7 @@ from arize.otel import register
 from openinference.instrumentation.langchain import LangChainInstrumentor
 from openinference.instrumentation.openai import OpenAIInstrumentor
 from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
-from omniagent import setup_logging
+from omniagent import OmniAgentInstrumentor, setup_logging
 
 from ai_server import (
     AppException, router, lifespan, GenericTracingMiddleware,
@@ -18,7 +18,17 @@ from ai_server import (
     CORS_ALLOW_ORIGINS, CORS_ALLOW_CREDENTIALS, CORS_ALLOW_METHODS, CORS_ALLOW_HEADERS
 )
 
-load_dotenv()
+load_dotenv(override=True)
+
+# Treat blank OpenAI env vars as unset to avoid invalid SDK configuration.
+def _unset_if_blank(env_name: str) -> None:
+    value = os.getenv(env_name)
+    if value is not None and not value.strip():
+        os.environ.pop(env_name, None)
+
+
+_unset_if_blank("OPENAI_BASE_URL")
+_unset_if_blank("OPENAI_API_KEY")
 
 setup_logging(level="INFO")
 
@@ -33,6 +43,9 @@ if ENABLE_TRACING and ARIZE_SPACE_ID and ARIZE_API_KEY:
         api_key=ARIZE_API_KEY,
         project_name=os.getenv("ARIZE_PROJECT_NAME", "Portfolio AI Server"),
     )
+    # Instrument OmniAgent spans against the consumer-owned tracer provider.
+    OmniAgentInstrumentor().instrument(tracer_provider=tracer_provider)
+
     # Consumer-owned instrumentation choices.
     OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
     PymongoInstrumentor().instrument(tracer_provider=tracer_provider)
