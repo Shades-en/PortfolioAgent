@@ -2,11 +2,11 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues
 from typing import AsyncGenerator, Tuple
 import asyncio
 
+from omniagent.ai.agents.agent import Agent
 from omniagent.ai.runner import Runner
 from omniagent.session import MongoSessionManager
 from omniagent.types import MessageQuery, RunnerOptions
 
-from ai_server.agents import AboutMeAgent
 from ai_server.tools import GetCompanyName, GetHoroscope
 from ai_server.utils.tracing import trace_method
 
@@ -26,7 +26,8 @@ class ChatService:
             user_client_id=user_cookie,
         )
 
-        agent = AboutMeAgent(
+        agent = Agent(
+            name="AboutMeAgent",
             description="An agent that can answer questions about itself",
             instructions="You are to answer any question posed to you",
             tools=[GetCompanyName(), GetHoroscope()],
