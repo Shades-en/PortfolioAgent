@@ -12,6 +12,9 @@ dependencies = [
     "arize-otel>=0.10.0",
     "dotenv>=0.9.9",
     "fastapi>=0.116.1",
+    "openinference-instrumentation-langchain>=0.1.56",
+    "openinference-instrumentation-openai>=0.1.39",
+    "opentelemetry-instrumentation-pymongo>=0.58b0",
     "uvicorn>=0.35.0",
     # For local development, install omniagent with: uv pip install -e ../OmniAgent
     # For production, uncomment and specify the published package version:
