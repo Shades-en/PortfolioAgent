@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional
 
 
 class SessionStarredRequest(BaseModel):
@@ -14,9 +14,10 @@ class SessionRenameRequest(BaseModel):
 
 class GenerateChatNameRequest(BaseModel):
     """Request model for generating a chat name."""
+    model_config = ConfigDict(extra="forbid")
+
     query: Optional[str] = Field(None, description="User query for context (required if no session_id)")
     session_id: Optional[str] = Field(None, description="Session ID to use context from (optional)")
     turns_between_chat_name: int = Field(default=20, description="Number of turns between chat name regeneration", ge=1)
     max_chat_name_length: int = Field(default=50, description="Maximum length for generated chat names", ge=10, le=200)
     max_chat_name_words: int = Field(default=5, description="Maximum words for generated chat names", ge=1, le=20)
-    provider_options: Optional[Dict[str, Any]] = Field(default=None, description="Provider-specific options (e.g., {'api_type': 'chat_completion'} for OpenAI)")

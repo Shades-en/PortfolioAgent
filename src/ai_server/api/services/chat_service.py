@@ -4,6 +4,7 @@ import asyncio
 
 from omniagent.ai.agents.agent import Agent
 from omniagent.ai.runner import Runner
+from omniagent.config import BASE_MODEL
 from omniagent.session import MongoSessionManager
 from omniagent.types import MessageQuery, RunnerOptions
 
@@ -18,7 +19,6 @@ class ChatService:
         *,
         session_id: str | None,
         user_cookie: str,
-        provider_options: dict | None,
         stream: bool,
     ) -> Runner:
         session_manager = MongoSessionManager(
@@ -30,10 +30,11 @@ class ChatService:
             name="AboutMeAgent",
             description="An agent that can answer questions about itself",
             instructions="You are to answer any question posed to you",
+            model=BASE_MODEL,
             tools=[GetCompanyName(), GetHoroscope()],
         )
 
-        runner_options = RunnerOptions(provider_options=provider_options, stream=stream)
+        runner_options = RunnerOptions(stream=stream)
         return Runner(agent=agent, session_manager=session_manager, options=runner_options)
 
     @classmethod
@@ -46,7 +47,6 @@ class ChatService:
         query_message: MessageQuery, 
         session_id: str | None, 
         user_cookie: str, 
-        provider_options: dict | None = None,
     ) -> dict:
         """
         Handle a chat request by orchestrating session management, agent creation, and query execution.
@@ -59,7 +59,6 @@ class ChatService:
         runner = cls._build_runner(
             session_id=session_id,
             user_cookie=user_cookie,
-            provider_options=provider_options,
             stream=False,
         )
         return await runner.run(query_message=query_message)
@@ -74,7 +73,6 @@ class ChatService:
         query_message: MessageQuery, 
         session_id: str | None, 
         user_cookie: str, 
-        provider_options: dict | None = None,
     ) -> Tuple[AsyncGenerator[str, None], asyncio.Future]:
         """
         Handle a streaming chat request, returning a generator and result future.
@@ -89,7 +87,6 @@ class ChatService:
         runner = cls._build_runner(
             session_id=session_id,
             user_cookie=user_cookie,
-            provider_options=provider_options,
             stream=True,
         )
         return await runner.run_stream(query_message=query_message)

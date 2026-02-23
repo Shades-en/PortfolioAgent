@@ -35,7 +35,6 @@ async def chat(chat_request: ChatRequest, response: Response):
                 query_message=chat_request.query_message,
                 session_id=chat_request.session_id,
                 user_cookie=chat_request.user_cookie,
-                provider_options=chat_request.provider_options,
             )
     finally:
         # Pop orchestrator from stack
@@ -66,7 +65,6 @@ async def chat_stream(chat_request: ChatRequest):
                     query_message=chat_request.query_message,
                     session_id=chat_request.session_id,
                     user_cookie=chat_request.user_cookie,
-                    provider_options=chat_request.provider_options,
                 )
                 async for event in stream_gen:
                     yield event
