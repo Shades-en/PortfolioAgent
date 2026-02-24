@@ -8,3 +8,12 @@ SERVER = "SERVER"
 # Session backend selection
 SESSION_BACKEND_MONGO = "mongo"
 DEFAULT_SESSION_BACKEND = SESSION_BACKEND_MONGO
+
+# Trace and request response headers
+HEADER_TRACEPARENT = "traceparent"
+HEADER_TRACE_ID = "x-trace-id"
+HEADER_REQUEST_ID = "x-request-id"
+EMPTY_TRACE_HEADER_VALUE = ""
+TRACEPARENT_VERSION = "00"
+REQUEST_ID_SCOPE_KEY = "request_id"
+REQUEST_ID_SPAN_ATTRIBUTE = "request.id"

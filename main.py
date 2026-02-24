@@ -15,7 +15,8 @@ from omniagent import OmniAgentInstrumentor, setup_logging
 from ai_server import (
     AppException, router, lifespan, GenericTracingMiddleware,
     BASE_PATH, HOST, PORT, RELOAD, WORKERS,
-    CORS_ALLOW_ORIGINS, CORS_ALLOW_CREDENTIALS, CORS_ALLOW_METHODS, CORS_ALLOW_HEADERS
+    CORS_ALLOW_ORIGINS, CORS_ALLOW_CREDENTIALS, CORS_ALLOW_METHODS, CORS_ALLOW_HEADERS,
+    CORS_EXPOSE_HEADERS,
 )
 
 load_dotenv(override=True)
@@ -43,13 +44,14 @@ if ENABLE_TRACING and ARIZE_SPACE_ID and ARIZE_API_KEY:
         api_key=ARIZE_API_KEY,
         project_name=os.getenv("ARIZE_PROJECT_NAME", "Portfolio AI Server"),
     )
-    # Instrument OmniAgent spans against the consumer-owned tracer provider.
-    OmniAgentInstrumentor().instrument(tracer_provider=tracer_provider)
 
     # Consumer-owned instrumentation choices.
     OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
     PymongoInstrumentor().instrument(tracer_provider=tracer_provider)
     LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+
+    # Instrument OmniAgent spans against the consumer-owned tracer provider.
+    OmniAgentInstrumentor().instrument(tracer_provider=tracer_provider)
 else:
     print("⚠️  Tracing disabled - Set ENABLE_TRACING=true and configure Arize credentials to enable")
 
@@ -68,6 +70,7 @@ app.add_middleware(
     allow_credentials=CORS_ALLOW_CREDENTIALS,
     allow_methods=CORS_ALLOW_METHODS,
     allow_headers=CORS_ALLOW_HEADERS,
+    expose_headers=CORS_EXPOSE_HEADERS,
 )
 
 app.include_router(router)

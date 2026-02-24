@@ -12,6 +12,7 @@ from ai_server.config import (
     CORS_ALLOW_CREDENTIALS,
     CORS_ALLOW_METHODS,
     CORS_ALLOW_HEADERS,
+    CORS_EXPOSE_HEADERS,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "CORS_ALLOW_CREDENTIALS",
     "CORS_ALLOW_METHODS",
     "CORS_ALLOW_HEADERS",
+    "CORS_EXPOSE_HEADERS",
 ]
