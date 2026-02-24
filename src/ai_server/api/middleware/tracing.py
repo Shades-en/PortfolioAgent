@@ -82,7 +82,7 @@ class GenericTracingMiddleware:
                     self._set_input_attributes(span=span, input_data=input_data)
                     span.set_attribute(SpanAttributes.INPUT_VALUE, json.dumps(input_data))
 
-                replay_receive = self._make_replay_receive(request_body)
+                replay_receive = self._make_replay_receive(request_body, receive)
 
                 async def send_wrapper(message: Message) -> None:
                     nonlocal response_status_code
@@ -161,19 +161,21 @@ class GenericTracingMiddleware:
         return b"".join(body_chunks)
 
     @staticmethod
-    def _make_replay_receive(body: bytes) -> Receive:
-        queue: list[Message] = [
-            {
-                "type": "http.request",
-                "body": body,
-                "more_body": False,
-            }
-        ]
+    def _make_replay_receive(body: bytes, receive: Receive) -> Receive:
+        request_replayed = False
 
         async def replay_receive() -> Message:
-            if queue:
-                return queue.pop(0)
-            return {"type": "http.disconnect"}
+            nonlocal request_replayed
+            if not request_replayed:
+                request_replayed = True
+                return {
+                    "type": "http.request",
+                    "body": body,
+                    "more_body": False,
+                }
+            # Delegate to the original channel so downstream disconnect listeners
+            # observe real client disconnect events instead of a synthetic one.
+            return await receive()
 
         return replay_receive
 
