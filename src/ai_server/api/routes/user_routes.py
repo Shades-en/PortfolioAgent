@@ -26,8 +26,7 @@ async def get_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Use mode='json' to properly serialize ObjectId and datetime fields
-    data = user.model_dump(mode="json")
+    data = dict(user.data)
     if "client_id" in data:
         data["cookie_id"] = data.pop("client_id")
     return data

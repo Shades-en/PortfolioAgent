@@ -2,7 +2,6 @@
 
 from ai_server.utils.general import _env_flag
 from ai_server.constants import (
-    DEFAULT_SESSION_BACKEND,
     HEADER_REQUEST_ID,
     HEADER_TRACE_ID,
     HEADER_TRACEPARENT,
@@ -26,6 +25,3 @@ CORS_EXPOSE_HEADERS = [HEADER_REQUEST_ID, HEADER_TRACE_ID, HEADER_TRACEPARENT]
 
 # Development mode - enables index dropping and other dev features
 DEV_MODE = _env_flag("DEV_MODE", False)
-
-# Persistence backend selection (used by startup validation)
-SESSION_BACKEND = os.getenv("SESSION_BACKEND", DEFAULT_SESSION_BACKEND)

@@ -35,7 +35,7 @@
 - `src/ai_server/api/services/`: business logic and data orchestration.
 - `src/ai_server/api/dto/`: request DTOs and validation.
 - `src/ai_server/api/dependencies.py`: auth-related dependencies (`X-Cookie-Id`).
-- `src/ai_server/api/startup.py`: startup/shutdown lifecycle, `MongoSessionManager.initialize/shutdown`.
+- `src/ai_server/api/lifecycle.py`: startup/shutdown lifecycle, persistence backend initialization/shutdown.
 - `src/ai_server/schemas/custom_message.py`: custom message schema extensions.
 - `src/ai_server/utils/tracing.py`: trace context + tracing decorators + graph helpers.
 

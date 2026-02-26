@@ -5,7 +5,7 @@ import asyncio
 from omniagent.ai.agents.agent import Agent
 from omniagent.ai.runner import Runner
 from omniagent.config import BASE_MODEL
-from omniagent.session import MongoSessionManager
+from omniagent.persistence import get_context
 from omniagent.types import MessageQuery, RunnerOptions
 
 from ai_server.tools import GetCompanyName, GetHoroscope
@@ -21,7 +21,8 @@ class ChatService:
         user_cookie: str,
         stream: bool,
     ) -> Runner:
-        session_manager = MongoSessionManager(
+        session_manager_cls = get_context().session_manager_cls
+        session_manager = session_manager_cls(
             session_id=session_id,
             user_client_id=user_cookie,
         )

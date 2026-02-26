@@ -1,6 +1,6 @@
 from ai_server.api.exceptions.error import AppException
 from ai_server.api.routes import router
-from ai_server.api.startup import lifespan
+from ai_server.api.lifecycle import lifespan
 from ai_server.api.middleware import GenericTracingMiddleware
 from ai_server.config import (
     BASE_PATH, 
