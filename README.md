@@ -2,8 +2,10 @@
 
 ## Session Backend
 - Backend is selected explicitly in startup via `initialize_persistence(...)`.
-- Current backend is hard-set to `PersistenceBackend.MONGO` in `src/ai_server/api/lifecycle.py`.
+- Current backend is hard-set to `PersistenceBackend.POSTGRES` in `src/ai_server/api/lifecycle.py`.
 - Services resolve repositories and session manager through `get_context()`.
+- Postgres config is read from env (`POSTGRES_DSN` or split keys `POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_HOST/POSTGRES_PORT/POSTGRES_DBNAME`, plus `POSTGRES_SSLMODE`).
+- In `DEV_MODE=true`, startup resets schema (`drop_all + create_all`); production should keep `DEV_MODE=false`.
 
 ## Tracing Response Headers
 - Every HTTP response includes:
@@ -20,10 +22,4 @@
   - `rg -n "MongoSessionManager" src/ai_server/api/services`
 
 ## TODO
-- 1. Need to come up with a better strategy for exposing functions for exposing pagination routes and all. We cannot expose direct schemas i feel because we cannot expect all document models will similarly have document pydantic models.
-
 - 4. Think multiagent how would you want?
-
-
-# Doubts -
-1. Maybe we should expose to_record method from omniagent itself. Or we can apply to_record from outside schema methods itself.

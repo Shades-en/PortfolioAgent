@@ -10,6 +10,7 @@ from arize.otel import register
 from openinference.instrumentation.langchain import LangChainInstrumentor
 from openinference.instrumentation.openai import OpenAIInstrumentor
 from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from omniagent import OmniAgentInstrumentor, setup_logging
 
 from ai_server import (
@@ -48,6 +49,7 @@ if ENABLE_TRACING and ARIZE_SPACE_ID and ARIZE_API_KEY:
     # Consumer-owned instrumentation choices.
     OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
     PymongoInstrumentor().instrument(tracer_provider=tracer_provider)
+    SQLAlchemyInstrumentor().instrument(tracer_provider=tracer_provider)
     LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
     # Instrument OmniAgent spans against the consumer-owned tracer provider.

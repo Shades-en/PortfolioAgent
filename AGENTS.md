@@ -11,7 +11,7 @@
 - Core stack:
   - FastAPI + Uvicorn
   - OmniAgent runner/session manager
-  - MongoDB via OmniAgent schemas
+  - MongoDB/Postgres via OmniAgent persistence backends
   - Arize/OpenTelemetry tracing
 
 ## Setup Commands
@@ -27,7 +27,7 @@
 - Copy `.env.example` to `.env` and fill required values.
 - Do not commit secrets (`.env`, API keys, credentials).
 - Tracing is optional and controlled by `ENABLE_TRACING`; Arize vars are required only when tracing is enabled.
-- Mongo configuration is required for session/message/user operations.
+- Configure the active persistence backend (Mongo or Postgres) with the required env vars before running session/message/user operations.
 
 ## Repository Map
 - `main.py`: app creation, middleware, CORS, exception handler, OpenAPI, uvicorn launch.
@@ -36,8 +36,18 @@
 - `src/ai_server/api/dto/`: request DTOs and validation.
 - `src/ai_server/api/dependencies.py`: auth-related dependencies (`X-Cookie-Id`).
 - `src/ai_server/api/lifecycle.py`: startup/shutdown lifecycle, persistence backend initialization/shutdown.
-- `src/ai_server/schemas/custom_message.py`: custom message schema extensions.
+- `src/ai_server/schemas/mongo/`: Mongo-specific custom schema extensions.
+- `src/ai_server/schemas/postgres/`: Postgres-specific custom schema extensions.
+- `src/ai_server/persistence/extensions/mongo/`: Mongo repository extensions (favorites/feedback).
+- `src/ai_server/persistence/extensions/postgres/`: Postgres repository extensions (favorites/feedback).
 - `src/ai_server/utils/tracing.py`: trace context + tracing decorators + graph helpers.
+
+## Backend Organization Rules
+- Keep backend-specific code in explicit backend folders only (for example `mongo/` and `postgres/`).
+- Do not mix Mongo and Postgres implementations in shared root files when backend folders exist.
+- For backend schema modules, use one model per file (`user.py`, `session.py`, `message.py`, `summary.py`); aggregate exports are allowed but must not hold full model implementations.
+- Only create custom consumer models when schema behavior/fields actually differ. Reuse OmniAgent base models directly when no customization is needed.
+- If the same behavior appears across multiple backends/systems, push that logic to a higher shared layer (base classes/shared services/contracts) and keep backend modules focused on backend-specific hooks only.
 
 ## Implementation Rules
 - Keep routes thin; put business logic in services.
@@ -45,6 +55,8 @@
 - For session/message/user mutations, enforce ownership using `cookie_id` at service/model calls.
 - Map known domain errors to explicit HTTP responses (`400/404/500`) instead of leaking raw exceptions.
 - Use `model_dump(mode="json")` when returning DB-backed models that include non-JSON-native fields.
+- Prioritize parallelization for independent IO work (reads, unrelated network calls, file scans) where correctness is unaffected.
+- Do not parallelize operations that share the same DB session/transaction/connection; keep those sequential for correctness and driver/ORM safety.
 
 ## Tracing And Streaming Rules
 - Preserve request-level tracing:
@@ -66,6 +78,11 @@
   - snake_case functions/variables
   - PascalCase classes
   - async service/route methods
+
+## Post-Implementation Cleanup
+- After implementing any plan, run a repository cleanup pass before finalizing.
+- Remove redundant files, stale imports, unused variables/constants, dead helper functions, and obsolete compatibility paths introduced during refactors.
+- Verify moved modules have no lingering old-path references in docs or code.
 
 ## Validation Before Finishing
 - Preferred checks:
